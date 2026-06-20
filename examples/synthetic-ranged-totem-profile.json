@@ -1,0 +1,19 @@
+{
+  "buildProfileSchemaVersion": 1,
+  "id": "synthetic-ranged-totem",
+  "archetypeTags": [
+    "role.totem"
+  ],
+  "skillTags": [
+    "role.projectile",
+    "role.accuracy",
+    "role.defensive"
+  ],
+  "weaponTags": [
+    "role.crossbow"
+  ],
+  "forbiddenTags": [
+    "mechanic.spell",
+    "mechanic.minion"
+  ]
+}

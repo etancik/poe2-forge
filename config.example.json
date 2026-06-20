@@ -1,0 +1,8 @@
+{
+  "pobRuntime": "external/pob2-api/runtime",
+  "pobRuntimeManifest": "external/pob2-api/current.json",
+  "pobExecutable": "external/pob2-api/runtime/Path of Building-PoE2.exe",
+  "pobWrapper": "external/pob2-api/runtime/HeadlessWrapper.lua",
+  "treeSnapshot": "external/poe2-tree/current",
+  "benchmark": "benchmarks/local-machine.json"
+}

@@ -1,0 +1,26 @@
+node_modules/
+.env
+.env.*
+config.local.json
+external/
+artifacts/
+results/
+benchmarks/
+*.cache.json
+*.benchmark.json
+*.log
+*.tmp
+*.bak
+*.orig
+*~
+builds/
+roadmaps/
+baselines/
+learning.json
+*.xml
+
+# Internal publication and future-development notes
+/docs/publication-audit.md
+/docs/github-publish-handoff.md
+/references/operations.md
+/references/passive-optimizer-slice5-handoff.md

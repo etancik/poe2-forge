@@ -1,0 +1,58 @@
+{
+  "presetSchemaVersion": 1,
+  "derivedFromBenchmarkVersion": 1,
+  "benchmarkArtifact": null,
+  "note": "Defaults retained from development calibration; provide a local benchmark for adaptive selection.",
+  "selection": {
+    "slow": {
+      "maximumRepairCandidatesPerSecond": 499,
+      "maximumExactEvaluationsPerSecond": 0.99
+    },
+    "fast": {
+      "minimumRepairCandidatesPerSecond": 2000,
+      "minimumExactEvaluationsPerSecond": 3
+    },
+    "fallback": "moderate"
+  },
+  "presets": {
+    "slow": {
+      "description": "Narrow beam with selective PoB evaluation.",
+      "beamWidth": 12,
+      "branchLimit": 6,
+      "remotePackageLimit": 40,
+      "transactionLimit": 320,
+      "batchSize": 16,
+      "archiveEvaluation": false,
+      "evaluationFraction": 0.05,
+      "minimumEvaluations": 1,
+      "resultLimit": 8,
+      "diversityBucketCap": 2
+    },
+    "moderate": {
+      "description": "Wider beam with less cheap-score pruning.",
+      "beamWidth": 36,
+      "branchLimit": 14,
+      "remotePackageLimit": 120,
+      "transactionLimit": 1800,
+      "batchSize": 64,
+      "archiveEvaluation": false,
+      "evaluationFraction": 0.12,
+      "minimumEvaluations": 3,
+      "resultLimit": 12,
+      "diversityBucketCap": 3
+    },
+    "fast": {
+      "description": "Archive-driven PoB evaluation with larger cheap batches.",
+      "beamWidth": 96,
+      "branchLimit": 28,
+      "remotePackageLimit": 320,
+      "transactionLimit": 7200,
+      "batchSize": 256,
+      "archiveEvaluation": true,
+      "evaluationFraction": 0.3,
+      "minimumEvaluations": 8,
+      "resultLimit": 20,
+      "diversityBucketCap": 5
+    }
+  }
+}
