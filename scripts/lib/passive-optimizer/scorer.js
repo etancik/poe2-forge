@@ -5,8 +5,8 @@ const { packageDelta } = require("./packages");
 const { sortedObject } = require("./stable");
 const { validateCandidate } = require("./validator");
 
-const BUILD_PROFILE_SCHEMA_VERSION = 1;
-const SCORER_VERSION = 1;
+const BUILD_PROFILE_SCHEMA_VERSION = 2;
+const SCORER_VERSION = 2;
 
 const DEFAULT_COMPONENT_WEIGHTS = {
   offense: 1,
@@ -29,6 +29,7 @@ function normalizeBuildProfile(input = {}) {
   return {
     buildProfileSchemaVersion:
       input.buildProfileSchemaVersion || BUILD_PROFILE_SCHEMA_VERSION,
+    profileVersion: input.profileVersion ?? input.version ?? 1,
     id: input.id || "anonymous",
     archetypeTags: normalizeTags(input.archetypeTags),
     skillTags: normalizeTags(input.skillTags),
@@ -306,6 +307,7 @@ function scoreDelta({
   return {
     scorerVersion: SCORER_VERSION,
     buildProfileSchemaVersion: profile.buildProfileSchemaVersion,
+    profileVersion: profile.profileVersion,
     profileId: profile.id,
     packageId: pkg.id,
     rankScore,

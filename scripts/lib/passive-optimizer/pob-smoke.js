@@ -313,7 +313,11 @@ async function evaluateCandidates({
 }
 
 module.exports = {
+  drift,
   evaluateCandidates,
   observableSnapshot,
+  parity,
+  runtimeIdentity,
   smokeCandidates,
+  treeParams,
 };

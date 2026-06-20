@@ -1,0 +1,109 @@
+{
+  "name": "crossbow-tactician-calibration",
+  "version": 3,
+  "minimumSample": 8,
+  "objectives": [
+    {
+      "name": "crossbow_damage",
+      "field": "TotalDPS",
+      "direction": "max",
+      "role": "damage.crossbow",
+      "skill": "Crossbow Shot"
+    },
+    {
+      "name": "crossbow_accuracy",
+      "field": "HitChance",
+      "direction": "max",
+      "role": "accuracy.crossbow",
+      "skill": "Crossbow Shot"
+    },
+    {
+      "name": "ballista_damage",
+      "field": "TotalDPS",
+      "direction": "max",
+      "role": "damage.ballista",
+      "skill": {
+        "names": ["Ballista Bolt", "Artillery Ballista", "Ballista"]
+      },
+      "optional": true
+    },
+    {
+      "name": "active_totem_limit",
+      "field": "ActiveTotemLimit",
+      "direction": "max",
+      "role": "totem.limit",
+      "skill": {
+        "names": ["Artillery Ballista", "Ballista"]
+      },
+      "optional": true
+    },
+    {
+      "name": "placement_time",
+      "field": "TotemPlacementTime",
+      "direction": "min",
+      "role": "totem.placement",
+      "skill": {
+        "names": ["Artillery Ballista", "Ballista"]
+      },
+      "optional": true
+    },
+    {
+      "name": "life",
+      "field": "Life",
+      "direction": "max",
+      "role": "defense.life"
+    },
+    {
+      "name": "ehp",
+      "field": "TotalEHP",
+      "direction": "max",
+      "role": "defense.ehp"
+    },
+    {
+      "name": "physical_max_hit",
+      "field": "PhysicalMaximumHitTaken",
+      "direction": "max",
+      "role": "defense.max_hit"
+    },
+    {
+      "name": "elemental_max_hit",
+      "field": "LightningMaximumHitTaken",
+      "direction": "max",
+      "role": "defense.max_hit"
+    },
+    {
+      "name": "chaos_max_hit",
+      "field": "ChaosMaximumHitTaken",
+      "direction": "max",
+      "role": "defense.max_hit"
+    },
+    {
+      "name": "life_recovery",
+      "field": "LifeRegenRecovery",
+      "direction": "max",
+      "role": "recovery.life",
+      "optional": true
+    },
+    {
+      "name": "life_leech",
+      "field": "LifeLeechGainRate",
+      "direction": "max",
+      "role": "recovery.leech",
+      "optional": true
+    },
+    {
+      "name": "point_cost",
+      "field": "pointCost",
+      "source": "candidate",
+      "direction": "min",
+      "role": "cost.points"
+    },
+    {
+      "name": "respec_cost",
+      "field": "respecCost",
+      "source": "candidate",
+      "direction": "min",
+      "role": "cost.respec"
+    }
+  ]
+}

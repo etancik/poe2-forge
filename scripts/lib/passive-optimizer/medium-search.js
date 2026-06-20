@@ -760,6 +760,19 @@ function runMediumRebuildSearch(input) {
     ...entry,
     representativeLabels: labels.get(entry.canonicalKey) || [],
   }));
+  const archiveKeys = new Set(archive.map((entry) => entry.canonicalKey));
+  const calibrationPool = [...usable]
+    .sort(
+      (left, right) =>
+        right.rankScore - left.rankScore ||
+        left.canonicalKey.localeCompare(right.canonicalKey),
+    )
+    .map((entry, cheapRank) => ({
+      ...entry,
+      cheapRank: cheapRank + 1,
+      cheapPruned: !archiveKeys.has(entry.canonicalKey),
+      calibrationKind: "candidate",
+    }));
   if (stableStringify(incumbent) !== baselineSnapshot) {
     throw new Error("Medium search mutated the incumbent candidate");
   }
@@ -776,6 +789,7 @@ function runMediumRebuildSearch(input) {
     archiveSize: archive.length,
     archive,
     representatives,
+    calibrationPool,
   };
 }
 

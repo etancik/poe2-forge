@@ -1,17 +1,20 @@
 {
   "buildProfileSchemaVersion": 2,
-  "profileVersion": 2,
-  "id": "synthetic-ranged-totem",
+  "profileVersion": 1,
+  "id": "crossbow-tactician-local-ranking",
   "archetypeTags": [
-    "role.totem"
+    "role.totem",
+    "role.defensive"
   ],
   "skillTags": [
     "role.projectile",
-    "role.accuracy",
-    "role.defensive"
+    "role.accuracy"
   ],
   "weaponTags": [
     "role.crossbow"
+  ],
+  "desiredTags": [
+    "role.recovery"
   ],
   "forbiddenTags": [
     "mechanic.spell",

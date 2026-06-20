@@ -6,6 +6,8 @@ external/
 artifacts/
 results/
 benchmarks/
+outputs/
+work/
 *.cache.json
 *.benchmark.json
 *.log

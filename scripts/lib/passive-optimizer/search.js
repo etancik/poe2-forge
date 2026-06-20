@@ -4,6 +4,7 @@ const { applyDelta, candidateDelta, deltaCost, normalizeDelta } = require("./del
 const {
   normalizeBuildProfile,
   rankPackages,
+  SCORER_VERSION,
   scoreDelta,
 } = require("./scorer");
 const { sha256, sortedUniqueNumbers, stableStringify } = require("./stable");
@@ -493,6 +494,10 @@ function scoreSearchCandidate({
     components.exploration -
     objectives.uncertainty;
   return {
+    scorerVersion: SCORER_VERSION,
+    buildProfileSchemaVersion: normalizedProfile.buildProfileSchemaVersion,
+    profileVersion: normalizedProfile.profileVersion,
+    profileId: normalizedProfile.id,
     status,
     rankScore,
     components,
@@ -853,6 +858,24 @@ function runPackageSearch(input) {
     ...entry,
     representativeLabels: labels.get(entry.canonicalKey) || [],
   }));
+  const archiveKeys = new Set(archive.map((entry) => entry.canonicalKey));
+  const calibrationPool = [...usable]
+    .sort(
+      (left, right) =>
+        right.rankScore - left.rankScore ||
+        left.canonicalKey.localeCompare(right.canonicalKey),
+    )
+    .map((entry, cheapRank) => ({
+      ...entry,
+      cheapRank: cheapRank + 1,
+      cheapPruned: !archiveKeys.has(entry.canonicalKey),
+      calibrationKind:
+        entry.changedNodeCount === 0
+          ? "baseline"
+          : entry.changedNodeCount <= Math.min(4, options.maxChanges)
+            ? "near-baseline"
+            : "candidate",
+    }));
 
   if (stableStringify(incumbent) !== baselineSnapshot) {
     throw new Error("Search mutated the incumbent candidate");
@@ -866,6 +889,7 @@ function runPackageSearch(input) {
     archiveSize: archive.length,
     archive,
     representatives,
+    calibrationPool,
   };
 }
 

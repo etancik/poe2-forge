@@ -60,6 +60,14 @@ search.
 Use its benchmark-derived medium-rebuild presets for 20-30-node passive
 rebuilds; keep PoB as the exact tier and never apply returned candidates to a
 saved build automatically.
+For bounded exact evaluation, configure explicit objectives, runtime and
+evaluation limits, a persistent cache, and a checkpoint. Resume only matching
+jobs. Treat the cheap and real-PoB Pareto archives separately and use scorer
+diagnostics as calibration evidence, not as permission to mutate a build.
+Require incumbent and near-baseline probes, audit cheap-pruned candidates,
+and prefer build-specific skill objectives plus point/respec costs. Do not
+change scorer features or pruning thresholds without a measured sample that
+clears the configured minimum-sample warning.
 
 Treat stdout as a token budget. Save full artifacts and keep stdout compact.
 Never load a full result merely to summarize it.

@@ -5,18 +5,26 @@ searching Path of Exile 2 passive trees. Deterministic local code generates and
 filters candidates; Path of Building (PoB) is the source of truth for exact
 metrics and acceptance. An LLM is not in the search loop.
 
-Slices 1-4 are implemented:
+Slices 1-6 are implemented:
 
 - legality validation and connector rerouting;
 - passive-package extraction and profile-aware cheap scoring;
 - low-respec deterministic search with canonicalization, cache, Pareto
   retention, diversity, and exact PoB checks;
 - medium rebuilds covering 20-30 changed nodes with transactional rollback,
-  repair, and persistent PoB evaluation.
+  repair, and persistent PoB evaluation;
+- selective exact evaluation from predicted-best, uncertain, diverse,
+  incumbent-adjacent, and deterministic-random candidates, with resumable
+  checkpoints, complete cache identities, separate cheap/real Pareto archives,
+  and scorer calibration diagnostics;
+- calibration pools that always retain the incumbent and near-baseline probes,
+  stratify deterministic samples across cheap rank, uncertainty,
+  structural/role buckets, and cheap-pruned candidates, extract configured
+  skill-specific objectives, and diagnose scorer failure, candidate-generation
+  limits, insufficient samples, or a locally strong incumbent.
 
 The project is experimental. It must not modify a saved build automatically
 unless the user explicitly requests a separate, reviewed apply operation.
-Slice 5 is not included.
 
 ## Prerequisites
 
@@ -114,6 +122,31 @@ Medium rebuild:
 node scripts/passive-optimizer.js search --build PATH/Build.xml --profile examples/synthetic-ranged-totem-profile.json --medium-rebuild --min-changes 20 --max-changes 30 --benchmark benchmarks/local-machine.json --runtime-limit-ms 60000 --evaluation-limit 12 --cache artifacts/medium.cache.json --output artifacts/medium.json
 ```
 
+Selective real-PoB evaluation:
+
+```sh
+node scripts/passive-optimizer.js search --build PATH/Build.xml --profile examples/crossbow-tactician-profile.json --medium-rebuild --runtime-limit-ms 60000 --evaluation-limit 12 --objective-set examples/real-objectives.json --selection-mix best=0.3,uncertainty=0.2,diverse=0.2,adjacent=0.2,random=0.1 --near-baseline-count 2 --minimum-sample 8 --batch-size 4 --cache artifacts/selective.cache.json --checkpoint artifacts/selective.checkpoint.json --output artifacts/selective.json
+```
+
+Resume the same deterministic evaluation job:
+
+```sh
+node scripts/passive-optimizer.js search --build PATH/Build.xml --profile examples/crossbow-tactician-profile.json --medium-rebuild --runtime-limit-ms 60000 --evaluation-limit 12 --objective-set examples/real-objectives.json --selection-mix best=0.3,uncertainty=0.2,diverse=0.2,adjacent=0.2,random=0.1 --near-baseline-count 2 --minimum-sample 8 --batch-size 4 --cache artifacts/selective.cache.json --checkpoint artifacts/selective.checkpoint.json --resume --output artifacts/selective-resumed.json
+```
+
+The evaluation budget bounds selected candidate jobs; cache and checkpoint
+hits do not consume PoB calls. Every uncached job reloads the baseline,
+verifies exact tree parity and unrelated-state drift, extracts the configured
+objectives, restores the baseline, and checkpoints the result. Failed,
+timed-out, or drifted jobs never enter the real-PoB Pareto archive.
+
+The calibration report includes objective deltas, baseline dominance,
+confidence intervals, minimum-sample warnings, cheap-pruned false-negative
+audits, and measured representatives for damage, balanced, tanky,
+accuracy/recovery, low-respec, and experimental-totem roles. Scorer and profile
+versions are part of exact-evaluation cache identity. No learned weights are
+introduced from an insufficient sample.
+
 Use `--full-stdout` only for local debugging: full artifacts can contain
 build-derived stats, items, skills, and tree state. Default stdout is compact.
 
@@ -138,6 +171,9 @@ npm run test:integration
 ## Limitations
 
 - Cheap scores guide search but are not authoritative build measurements.
+- Cheap and real-PoB Pareto archives are intentionally independent.
+- Rank correlation, top-k recall, regret, and false-negative rates include
+  uncertainty warnings; small samples must not be treated as validation.
 - Exact checks depend on the supplied PoB runtime and its API shim.
 - Tree exports and runtime versions must match the build under evaluation.
 - Build profiles remain user-authored heuristics.

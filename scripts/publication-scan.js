@@ -5,7 +5,13 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const ignoredDirectories = new Set([".git", "node_modules", "external"]);
+const ignoredDirectories = new Set([
+  ".git",
+  "node_modules",
+  "external",
+  "outputs",
+  "work",
+]);
 const findings = [];
 
 const privatePatterns = [

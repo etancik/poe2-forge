@@ -25,6 +25,12 @@ const {
   smokeCandidates,
 } = require("./lib/passive-optimizer/pob-smoke");
 const {
+  evaluateSelectiveCandidates,
+  normalizeObjectiveSet,
+  normalizeSelectionMix,
+  parseObjectiveSpec,
+} = require("./lib/passive-optimizer/selective-evaluation");
+const {
   runMediumRebuildSearch,
 } = require("./lib/passive-optimizer/medium-search");
 const {
@@ -87,7 +93,14 @@ Search:
   --preset NAME           auto, slow, moderate, or fast
   --evaluation-limit N    Exact PoB evaluation budget
   --runtime-limit-ms N    Overall runtime budget
+  --objective-set VALUE   JSON file or field:max,field:min objective list
+  --selection-mix VALUE   best/uncertainty/diverse/adjacent/random weights
+  --batch-size N          Selective PoB checkpoint batch size
+  --near-baseline-count N Guaranteed near-baseline calibration probes
+  --minimum-sample N      Warning threshold for scorer diagnostics
   --cache FILE            Optional exact-evaluation cache
+  --checkpoint FILE       Resumable selective-evaluation checkpoint
+  --resume                Resume the matching checkpoint idempotently
 
 Output:
   --output FILE           Full JSON artifact (default: ./artifacts/...)
@@ -127,6 +140,9 @@ function parseArgs(argv) {
     preset: "auto",
     mediumRebuild: false,
     includeReroutes: true,
+    evaluationBatchSize: 4,
+    nearBaselineCount: 2,
+    minimumSample: 8,
     explicit: {},
   };
   if (argv.includes("--help") || argv.includes("-h") || !argv[2]) {
@@ -198,7 +214,24 @@ function parseArgs(argv) {
       .split(",")
       .map((entry) => entry.trim())
       .filter(Boolean);
+    else if (arg === "--objective-set") args.objectiveSet = argv[++index];
+    else if (arg === "--selection-mix") {
+      args.selectionMix = normalizeSelectionMix(argv[++index]);
+    }
+    else if (arg === "--batch-size" || arg === "--evaluation-batch-size") {
+      args.evaluationBatchSize = Number(argv[++index]);
+    }
+    else if (arg === "--near-baseline-count") {
+      args.nearBaselineCount = Number(argv[++index]);
+    }
+    else if (arg === "--minimum-sample") {
+      args.minimumSample = Number(argv[++index]);
+    }
     else if (arg === "--cache") args.cache = path.resolve(argv[++index]);
+    else if (arg === "--checkpoint") {
+      args.checkpoint = path.resolve(argv[++index]);
+    }
+    else if (arg === "--resume") args.resume = true;
     else if (arg === "--relevant-limit") {
       args.relevantLimit = Number(argv[++index]);
     } else if (arg === "--diversity-bucket-cap") {
@@ -240,6 +273,18 @@ function parseArgs(argv) {
   }
   if (args.command === "search" && args.evaluationLimit > 0 && !args.build) {
     throw new Error("search --pob-limit requires --build");
+  }
+  if (args.resume && !args.checkpoint) {
+    throw new Error("--resume requires --checkpoint FILE");
+  }
+  if (
+    (args.checkpoint || args.selectionMix) &&
+    !args.objectiveSet &&
+    !args.metrics?.length
+  ) {
+    throw new Error(
+      "--checkpoint/--selection-mix require --objective-set or --metrics",
+    );
   }
   const canLoadCandidateFromPackages =
     args.packages && ["inspect", "score", "search"].includes(args.command);
@@ -344,8 +389,20 @@ function loadDelta(value) {
   return normalizeDelta(parsed.delta || parsed);
 }
 
+function loadObjectiveSet(args) {
+  if (args.objectiveSet) {
+    const possibleFile = path.resolve(args.objectiveSet);
+    return fs.existsSync(possibleFile)
+      ? normalizeObjectiveSet(readJson(possibleFile))
+      : parseObjectiveSpec(args.objectiveSet);
+  }
+  if (args.metrics?.length) return normalizeObjectiveSet(args.metrics);
+  return normalizeObjectiveSet([]);
+}
+
 function compactResult(artifact, output, limit) {
   if (artifact.search) {
+    const selective = artifact.pobEvaluation?.realArchive;
     return {
       build: {
         name: artifact.build?.name,
@@ -402,12 +459,30 @@ function compactResult(artifact, output, limit) {
             checked: artifact.pobEvaluation.checked,
             accepted: artifact.pobEvaluation.accepted,
             rejected: artifact.pobEvaluation.rejected,
+            failures: artifact.pobEvaluation.failures,
+            timeouts: artifact.pobEvaluation.timeouts,
+            drifted: artifact.pobEvaluation.drifted,
             cacheHits: artifact.pobEvaluation.cacheHits,
+            resumed: artifact.pobEvaluation.resumed,
             runtimeLimited: artifact.pobEvaluation.runtimeLimited,
-            elapsedMs: artifact.pobEvaluation.elapsedMs,
+            elapsedMs:
+              artifact.pobEvaluation.timing?.wallMs ??
+              artifact.pobEvaluation.elapsedMs,
+            timing: artifact.pobEvaluation.timing,
+            budget: artifact.pobEvaluation.budget,
+            realImprovements:
+              artifact.pobEvaluation.diagnostics?.realImprovements,
+            realParetoRepresentatives:
+              selective?.representatives?.map((entry) => ({
+                labels: entry.representativeLabels,
+                canonicalKey: entry.canonicalKey,
+                objectives: entry.objectives,
+              })),
+            scorerDiagnostics: artifact.pobEvaluation.diagnostics,
+            userReport: artifact.pobEvaluation.userReport,
           }
         : undefined,
-      artifact: path.basename(output),
+      artifact: output,
     };
   }
   const packageSummary = artifact.packageExtraction
@@ -683,6 +758,16 @@ async function main() {
       diversityBucketCap: args.diversityBucketCap ??
         (args.mediumRebuild ? preset.diversityBucketCap : undefined),
     };
+    let nearBaselineSearch = null;
+    if (args.mediumRebuild) {
+      nearBaselineSearch = runPackageSearch({
+        ...searchInput,
+        maxChanges: 4,
+        beamDepth: 1,
+        beamWidth: Math.max(24, Math.min(80, searchInput.beamWidth)),
+        resultLimit: Math.max(6, args.nearBaselineCount + 1),
+      });
+    }
     artifact.search = args.mediumRebuild
       ? runMediumRebuildSearch({
           ...searchInput,
@@ -691,9 +776,48 @@ async function main() {
           remotePackageLimit: preset.remotePackageLimit,
           transactionLimit: preset.transactionLimit,
           batchSize: preset.batchSize,
-          runtimeLimitMs: args.runtimeLimitMs,
+          runtimeLimitMs: Number.isFinite(args.runtimeLimitMs)
+            ? Math.max(1, args.runtimeLimitMs - (Date.now() - searchStartedAt))
+            : undefined,
         })
       : runPackageSearch(searchInput);
+    if (nearBaselineSearch) {
+      const combined = [...new Map(
+        [
+          ...nearBaselineSearch.calibrationPool,
+          ...artifact.search.calibrationPool,
+        ].map((entry) => [entry.canonicalKey, entry]),
+      ).values()]
+        .sort(
+          (left, right) =>
+            right.rankScore - left.rankScore ||
+            left.canonicalKey.localeCompare(right.canonicalKey),
+        )
+        .map((entry, cheapRank) => ({
+          ...entry,
+          cheapRank: cheapRank + 1,
+        }));
+      artifact.search.calibrationPool = combined;
+      artifact.search.calibration = {
+        baselineCandidates: combined.filter(
+          (entry) => entry.calibrationKind === "baseline",
+        ).length,
+        nearBaselineCandidates: combined.filter(
+          (entry) => entry.calibrationKind === "near-baseline",
+        ).length,
+        cheapPrunedCandidates: combined.filter(
+          (entry) => entry.cheapPruned,
+        ).length,
+        structuralRoleBuckets: [...new Set(
+          combined.map((entry) =>
+            `${(entry.families || []).join("+") || "unclassified"}@${
+              entry.transaction?.type ||
+              entry.moveHistory?.[0]?.type ||
+              "unknown"
+            }`),
+        )].sort(),
+      };
+    }
     artifact.packageExtraction = {
       packageSchemaVersion: artifact.packageExtraction.packageSchemaVersion,
       extractorVersion: artifact.packageExtraction.extractorVersion,
@@ -710,9 +834,8 @@ async function main() {
       uncertainPackageCount:
         artifact.packageExtraction.uncertainPackageCount,
     };
-    const evaluationCandidates = preset?.archiveEvaluation
-      ? artifact.search.archive
-      : artifact.search.representatives;
+    const evaluationCandidates =
+      artifact.search.calibrationPool || artifact.search.archive;
     const evaluationLimit = args.mediumRebuild
       ? args.explicit.evaluationLimit
         ? Math.max(0, Math.floor(args.evaluationLimit))
@@ -722,17 +845,37 @@ async function main() {
       ? Math.max(0, args.runtimeLimitMs - (Date.now() - searchStartedAt))
       : undefined;
     if (evaluationLimit > 0 && evaluationCandidates.length > 0 && args.build) {
-      artifact.pobEvaluation = await evaluateCandidates({
-        buildPath: args.build,
-        candidates: evaluationCandidates.map(
-          (entry) => entry.candidate,
-        ),
-        metrics: args.metrics || [],
-        currentRuntime: runtimeRequest(args),
-        count: evaluationLimit,
-        cachePath: args.cache,
-        runtimeLimitMs: remainingRuntimeMs,
-      });
+      const objectiveSet = loadObjectiveSet(args);
+      artifact.pobEvaluation = objectiveSet.objectives.length
+        ? await evaluateSelectiveCandidates({
+            buildPath: args.build,
+            shortlist: evaluationCandidates,
+            objectiveSet,
+            enemyProfile: profile,
+            treeData: graph.source,
+            currentRuntime: runtimeRequest(args),
+            evaluationLimit,
+            runtimeLimitMs: remainingRuntimeMs,
+            batchSize: args.evaluationBatchSize,
+            selectionMix: args.selectionMix,
+            seed: args.seed,
+            cachePath: args.cache,
+            checkpointPath: args.checkpoint,
+            resume: args.resume,
+            nearBaselineCount: args.nearBaselineCount,
+            minimumSample: args.minimumSample,
+          })
+        : await evaluateCandidates({
+            buildPath: args.build,
+            candidates: evaluationCandidates.map(
+              (entry) => entry.candidate,
+            ),
+            metrics: args.metrics || [],
+            currentRuntime: runtimeRequest(args),
+            count: evaluationLimit,
+            cachePath: args.cache,
+            runtimeLimitMs: remainingRuntimeMs,
+          });
     }
   }
 
