@@ -13,9 +13,14 @@ const {
   evaluateSelectiveCandidates,
   extractObjectives,
   normalizeObjectiveSet,
+  objectiveEvidence,
+  realParetoArchive,
   representativeRealPareto,
   scorerDiagnostics,
+  scorerQualityGate,
   selectCalibrationCandidates,
+  selectRescueCandidates,
+  structuralBucket,
 } = require(
   "../scripts/lib/passive-optimizer/selective-evaluation",
 );
@@ -99,6 +104,243 @@ const SIMPLE_OBJECTIVES = normalizeObjectiveSet({
   ],
 });
 
+const PERFORMANCE_AND_COST_OBJECTIVES = normalizeObjectiveSet({
+  name: "performance-and-cost",
+  version: 1,
+  objectives: [
+    { name: "damage", field: "TotalDPS", direction: "max", role: "damage" },
+    { name: "life", field: "Life", direction: "max", role: "defense.life" },
+    {
+      name: "point_cost",
+      field: "pointCost",
+      source: "candidate",
+      direction: "min",
+      role: "cost.points",
+    },
+    {
+      name: "respec_cost",
+      field: "respecCost",
+      source: "candidate",
+      direction: "min",
+      role: "cost.respec",
+    },
+  ],
+});
+
+test("performance evidence does not let point and respec costs reverse an upgrade", () => {
+  assert.deepEqual(
+    PERFORMANCE_AND_COST_OBJECTIVES.objectives.map((objective) => [
+      objective.name,
+      objective.kind,
+    ]),
+    [
+      ["damage", "performance"],
+      ["life", "performance"],
+      ["point_cost", "cost"],
+      ["respec_cost", "cost"],
+    ],
+  );
+  const evidence = objectiveEvidence({
+    canonicalKey: "upgrade",
+    status: "success",
+    objectives: {
+      damage: 107,
+      life: 1000,
+      point_cost: 3,
+      respec_cost: 1,
+    },
+  }, {
+    damage: 100,
+    life: 1000,
+    point_cost: 0,
+    respec_cost: 0,
+  }, PERFORMANCE_AND_COST_OBJECTIVES);
+
+  assert.equal(evidence.performanceComparison, "dominates_baseline");
+  assert.ok(evidence.performanceUtility > 0);
+  assert.deepEqual(evidence.costs, {
+    point_cost: 3,
+    respec_cost: 1,
+  });
+  assert.equal(evidence.baselineComparison, "dominates_baseline");
+  assert.equal(evidence.normalizedUtility, evidence.performanceUtility);
+
+  const regression = objectiveEvidence({
+    canonicalKey: "regression",
+    status: "success",
+    objectives: {
+      damage: 95,
+      life: 1000,
+      point_cost: 0,
+      respec_cost: 0,
+    },
+  }, {
+    damage: 100,
+    life: 1000,
+    point_cost: 0,
+    respec_cost: 0,
+  }, PERFORMANCE_AND_COST_OBJECTIVES);
+  assert.equal(regression.performanceComparison, "dominated_by_baseline");
+  assert.ok(regression.performanceUtility < 0);
+
+  const archive = realParetoArchive([
+    {
+      canonicalKey: "baseline",
+      status: "success",
+      objectives: {
+        damage: 100,
+        life: 1000,
+        point_cost: 0,
+        respec_cost: 0,
+      },
+    },
+    {
+      canonicalKey: "upgrade",
+      status: "success",
+      objectives: {
+        damage: 107,
+        life: 1000,
+        point_cost: 3,
+        respec_cost: 1,
+      },
+    },
+  ], PERFORMANCE_AND_COST_OBJECTIVES);
+  assert.deepEqual(archive.map((entry) => entry.canonicalKey), ["upgrade"]);
+});
+
+test("scorer diagnostics calibrate against performance utility instead of costs", () => {
+  const baseline = entry(0, 0);
+  const stronger = entry(2, 10, {
+    costs: { marginal: { add: 3, remove: 0 }, respec: 1 },
+  });
+  const weaker = entry(3, 5, {
+    costs: { marginal: { add: 0, remove: 0 }, respec: 0 },
+  });
+  const diagnostics = scorerDiagnostics({
+    shortlist: [baseline, stronger, weaker],
+    results: [
+      {
+        canonicalKey: baseline.canonicalKey,
+        status: "success",
+        objectives: {
+          damage: 100,
+          life: 1000,
+          point_cost: 0,
+          respec_cost: 0,
+        },
+      },
+      {
+        canonicalKey: stronger.canonicalKey,
+        status: "success",
+        objectives: {
+          damage: 107,
+          life: 1000,
+          point_cost: 3,
+          respec_cost: 1,
+        },
+      },
+      {
+        canonicalKey: weaker.canonicalKey,
+        status: "success",
+        objectives: {
+          damage: 103,
+          life: 1000,
+          point_cost: 0,
+          respec_cost: 0,
+        },
+      },
+    ],
+    baselineObjectives: {
+      damage: 100,
+      life: 1000,
+      point_cost: 0,
+      respec_cost: 0,
+    },
+    objectiveSet: PERFORMANCE_AND_COST_OBJECTIVES,
+    cheapParetoKeys: [
+      baseline.canonicalKey,
+      stronger.canonicalKey,
+      weaker.canonicalKey,
+    ],
+    pobCalls: 2,
+    minimumSample: 2,
+  });
+
+  assert.equal(diagnostics.cheapVsPobSpearman, 1);
+  assert.equal(diagnostics.realImprovements, 2);
+  assert.equal(diagnostics.realRegressions, 0);
+});
+
+test("structural buckets merge IDs but separate role, move, and size", () => {
+  const damageA = entry(2, 10, {
+    changedNodeCount: 3,
+    families: [
+      "damage.attack@travel_corridor:123.456",
+      "role.projectile@terminal_connector:456.789",
+    ],
+    moveHistory: [{ type: "reroute", packageIds: ["pkg-a"] }],
+  });
+  const damageB = entry(3, 9, {
+    changedNodeCount: 4,
+    families: [
+      "damage.crossbow@travel_corridor:900.901",
+      "role.projectile@terminal_connector:901.902",
+    ],
+    moveHistory: [{ type: "reroute", packageIds: ["pkg-b"] }],
+  });
+  const defense = entry(4, 8, {
+    changedNodeCount: 3,
+    families: ["defense@travel_corridor:123.456"],
+    moveHistory: [{ type: "reroute", packageIds: ["pkg-c"] }],
+  });
+  const add = entry(5, 7, {
+    changedNodeCount: 3,
+    families: ["damage.attack@travel_corridor:123.456"],
+    moveHistory: [{ type: "add", packageIds: ["pkg-d"] }],
+  });
+  const larger = entry(6, 6, {
+    changedNodeCount: 5,
+    families: ["damage.attack@travel_corridor:123.456"],
+    moveHistory: [{ type: "reroute", packageIds: ["pkg-e"] }],
+  });
+
+  assert.equal(structuralBucket(damageA), structuralBucket(damageB));
+  assert.notEqual(structuralBucket(damageA), structuralBucket(defense));
+  assert.notEqual(structuralBucket(damageA), structuralBucket(add));
+  assert.notEqual(structuralBucket(damageA), structuralBucket(larger));
+  assert.equal(structuralBucket(damageA), "damage@reroute@3-4");
+  assert.doesNotMatch(structuralBucket(damageA), /123|456|789|900|901|902|pkg/);
+});
+
+test("calibration tiers keep one-to-two changes adjacent and larger moves ordinary", () => {
+  const shortlist = [
+    entry(0, 0),
+    entry(2, 4, { changedNodeCount: 1 }),
+    entry(3, 3, { changedNodeCount: 2 }),
+    entry(4, 2, { changedNodeCount: 3 }),
+    entry(5, 1, { changedNodeCount: 4 }),
+  ];
+  const selection = selectCalibrationCandidates({
+    shortlist,
+    limit: shortlist.length,
+    nearBaselineCount: 2,
+    mix: { predictedBest: 1 },
+  });
+  const tiers = Object.fromEntries(selection.selected.map((value) => [
+    value.changedNodeCount,
+    value.calibrationTier,
+  ]));
+
+  assert.deepEqual(tiers, {
+    0: "baseline",
+    1: "adjacent",
+    2: "adjacent",
+    3: "ordinary",
+    4: "ordinary",
+  });
+  assert.equal(selection.mandatory.nearBaselineAvailable, 2);
+});
+
 test("calibration always includes baseline and near-baseline probes", () => {
   const shortlist = [
     entry(0, 0),
@@ -177,6 +419,109 @@ test("cheap-pruned audit finds hidden improvements and warns on small samples", 
     (warning) => warning.code === "MINIMUM_SAMPLE_NOT_MET",
   ));
   assert.equal(diagnostics.limitationDiagnosis.primary, "insufficient_sample");
+});
+
+test("false-negative reporting exposes unaudited coverage instead of a global zero", () => {
+  const baseline = entry(0, 0);
+  const pruned = Array.from({ length: 100 }, (_, index) =>
+    entry(index + 10, 100 - index, { cheapPruned: true }));
+  const audited = pruned.slice(0, 10).map((value) => ({
+    canonicalKey: value.canonicalKey,
+    status: "success",
+    objectives: { damage: 100, life: 100 },
+  }));
+  const diagnostics = scorerDiagnostics({
+    shortlist: [baseline, ...pruned],
+    results: [
+      {
+        canonicalKey: baseline.canonicalKey,
+        status: "success",
+        objectives: { damage: 100, life: 100 },
+      },
+      ...audited,
+    ],
+    baselineObjectives: { damage: 100, life: 100 },
+    objectiveSet: SIMPLE_OBJECTIVES,
+    cheapParetoKeys: [baseline.canonicalKey],
+    pobCalls: 10,
+    minimumSample: 8,
+  });
+
+  assert.equal(diagnostics.falseNegativePruning.auditedCheapPruned, 10);
+  assert.equal(diagnostics.falseNegativePruning.unevaluatedCheapPruned, 90);
+  assert.equal(diagnostics.falseNegativePruning.coverage, 0.1);
+  assert.equal(diagnostics.falseNegativePruning.scope, "audited_sample");
+  assert.equal(diagnostics.falseNegativePruning.globalRate, null);
+  assert.equal(diagnostics.falseNegativePruning.confidence, "low");
+  assert.ok(diagnostics.warnings.some(
+    (warning) => warning.code === "CHEAP_PRUNED_AUDIT_COVERAGE_LOW",
+  ));
+});
+
+test("rescue selection is deterministic, distinct, stratified, and capped", () => {
+  const shortlist = Array.from({ length: 12 }, (_, index) =>
+    entry(index + 10, 100 - index, {
+      changedNodeCount: index % 4 + 1,
+      cheapPruned: index % 2 === 0,
+      needsPoB: index % 3 === 0,
+      objectives: {
+        uncertainty: index,
+        respecCost: index % 4,
+      },
+      families: index % 2
+        ? ["defense@travel_corridor:100.200"]
+        : ["damage.attack@travel_corridor:300.400"],
+      moveHistory: [{ type: index % 3 ? "add" : "reroute" }],
+    }));
+  const excluded = shortlist.slice(0, 4).map((value) => value.canonicalKey);
+  const first = selectRescueCandidates({
+    shortlist,
+    excludedKeys: excluded,
+    limit: 5,
+    seed: 42,
+  });
+  const second = selectRescueCandidates({
+    shortlist,
+    excludedKeys: excluded,
+    limit: 5,
+    seed: 42,
+  });
+
+  assert.equal(stableStringify(first), stableStringify(second));
+  assert.equal(first.selected.length, 5);
+  assert.equal(new Set(first.selected.map((value) => value.canonicalKey)).size, 5);
+  assert.ok(first.selected.every((value) =>
+    !excluded.includes(value.canonicalKey)));
+  assert.ok(new Set(first.selected.map((value) => value.structuralBucket)).size > 1);
+  assert.ok(first.selected.some((value) => value.cheapPruned));
+  assert.ok(first.selected.every((value) => value.evaluationPhase === "rescue"));
+});
+
+test("quality gate requests rescue for a weak sample and remains explicit", () => {
+  const failed = scorerQualityGate({
+    evaluatedPairs: 10,
+    topK: 5,
+    topKRecall: 0.4,
+    cheapVsPobSpearmanConfidenceInterval: { low: -0.5, high: 0.1 },
+    falseNegativePruning: { count: 0 },
+  }, {
+    minimumSample: 8,
+    minimumTopKRecall: 0.6,
+  });
+  assert.equal(failed.passed, false);
+  assert.deepEqual(failed.reasons, ["top_k_recall", "rank_correlation"]);
+
+  const passed = scorerQualityGate({
+    evaluatedPairs: 10,
+    topK: 5,
+    topKRecall: 0.8,
+    cheapVsPobSpearmanConfidenceInterval: { low: -0.2, high: 0.5 },
+    falseNegativePruning: { count: 0 },
+  }, {
+    minimumSample: 8,
+    minimumTopKRecall: 0.6,
+  });
+  assert.equal(passed.passed, true);
 });
 
 test("objective extraction selects configured skills and derives costs", async () => {
@@ -435,15 +780,16 @@ test("calibration evaluation restores baseline and leaves build hash unchanged",
         tree = snapshot.tree;
       },
       async call(action, params) {
-        if (action === "set_tree") {
-          tree = { ...params };
-          return {};
-        }
+        if (action === "set_tree") throw new Error("set_tree must not be called");
+        if (action === "calc_with_stats") return { stats: {} };
         if (action === "get_tree") return { tree };
         if (action === "get_build_info") return { info: snapshot.info };
         if (action === "get_config") return { config: snapshot.config };
         if (action === "get_items") return { items: snapshot.items };
         if (action === "get_skills") return { skills: snapshot.skills };
+        if (action === "get_stats") {
+          return { stats: { Life: 1000, TotalEHP: 2000 } };
+        }
         throw new Error(action);
       },
       async close() {},

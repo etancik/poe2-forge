@@ -4,9 +4,13 @@ const { applyDelta, deltaCost, normalizeDelta } = require("./delta");
 const { packageDelta } = require("./packages");
 const { sortedObject } = require("./stable");
 const { validateCandidate } = require("./validator");
+const {
+  normalizePreferences,
+  packageRelevance,
+} = require("./mechanic-relevance");
 
-const BUILD_PROFILE_SCHEMA_VERSION = 2;
-const SCORER_VERSION = 2;
+const BUILD_PROFILE_SCHEMA_VERSION = 3;
+const SCORER_VERSION = 3;
 
 const DEFAULT_COMPONENT_WEIGHTS = {
   offense: 1,
@@ -36,6 +40,9 @@ function normalizeBuildProfile(input = {}) {
     weaponTags: normalizeTags(input.weaponTags),
     desiredTags: normalizeTags(input.desiredTags),
     forbiddenTags: normalizeTags(input.forbiddenTags),
+    activeMechanics: normalizeTags(input.activeMechanics),
+    mechanicPreferences: normalizePreferences(input.mechanicPreferences),
+    experimentalUnknown: input.experimentalUnknown === true,
     hardConstraints: {
       requiredTags: normalizeTags(input.hardConstraints?.requiredTags),
       forbiddenTags: normalizeTags(input.hardConstraints?.forbiddenTags),
@@ -161,6 +168,7 @@ function scoreDelta({
     baselineAllocatedNodeIds: candidate.allocatedNodeIds,
   });
   const tags = packageTags(pkg);
+  const relevance = packageRelevance(pkg, profile);
   const wanted = desiredTags(profile);
   const reasonCodes = new Set(pkg.reasonCodes || []);
   const requiredPobChecks = new Set();
@@ -220,6 +228,7 @@ function scoreDelta({
   if (forbiddenMatches.length) {
     reasonCodes.add("FORBIDDEN_TAG_MATCH");
   }
+  reasonCodes.add(relevance.reason);
   if (requiredMissing.length) {
     reasonCodes.add("REQUIRED_TAG_MISSING");
   }
@@ -265,6 +274,7 @@ function scoreDelta({
   const hardInvalid =
     !validation.valid ||
     forbiddenMatches.length > 0 ||
+    !relevance.accepted ||
     requiredMissing.length > 0 ||
     floors.failures.length > 0 ||
     maxPointsFailed ||

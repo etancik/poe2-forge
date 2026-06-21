@@ -2,7 +2,7 @@
 
 const { sortedObject } = require("./stable");
 
-const STAT_TAXONOMY_VERSION = 1;
+const STAT_TAXONOMY_VERSION = 2;
 
 const RULES = [
   ["damage.global", /\b(global )?(increased|more|reduced|less) damage\b/i],
@@ -24,7 +24,7 @@ const RULES = [
   ["totem.damage", /\btotems?.*(damage)|damage.*totems?\b/i],
   ["totem.attack_speed", /\btotems?.*attack speed|attack speed.*totems?\b/i],
   ["totem.lifecycle", /\btotems?.*(death|die|expire|expiry)|(?:death|expire|expiry).*totems?\b/i],
-  ["defense.life", /\bmaximum life\b|\blife\b/i],
+  ["defense.life", /\bmaximum life\b|\bto life\b|\blife regeneration\b/i],
   ["defense.armour", /\barmou?r\b/i],
   ["defense.evasion", /\bevasion\b/i],
   ["defense.resist", /\bresistance|resistances\b/i],
@@ -42,13 +42,17 @@ const RULES = [
   ["resources.reservation", /\breservation|reserve\b/i],
   ["resources.requirements", /\brequirements?\b/i],
   ["role.offensive", /\bdamage|attack speed|projectile|critical|penetration\b/i],
-  ["role.defensive", /\blife|armou?r|evasion|resistance|damage taken|avoid\b/i],
+  ["role.defensive", /\bmaximum life\b|\bto life\b|\blife regeneration\b|armou?r|evasion|resistance|damage taken|avoid\b/i],
   ["role.accuracy", /\baccuracy\b/i],
   ["role.recovery", /\bregenerat|leech|life.*on hit|recoup\b/i],
   ["role.mobility", /\bmovement speed|move speed|dash|roll distance\b/i],
   ["role.totem", /\btotems?\b/i],
   ["role.crossbow", /\bcrossbow|bolt|ammo|reload\b/i],
   ["role.projectile", /\bprojectiles?\b/i],
+  ["role.grenade", /\bgrenades?\b/i],
+  ["damage.grenade", /\bgrenades?.*damage|damage.*grenades?\b/i],
+  ["mechanic.grenade", /\bgrenades?\b/i],
+  ["mechanic.self-curse", /\bcurse effect on you|curses? on you|self[- ]curse\b/i],
   ["mechanic.spell", /\bspell\b/i],
   ["mechanic.minion", /\bminions?\b/i],
 ];

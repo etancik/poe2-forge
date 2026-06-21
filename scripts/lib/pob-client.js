@@ -96,7 +96,11 @@ function setXmlConfigValue(xml, tag, name, attribute, value) {
     });
   }
   const inserted = `\n\t\t\t<${tag} name="${name}" ${attribute}="${value}"/>`;
-  return xml.replace(/(<ConfigSet id="1"[^>]*>)/i, `$1${inserted}`);
+  const configSet = /(<ConfigSet id="1"[^>]*>)/i;
+  if (configSet.test(xml)) {
+    return xml.replace(configSet, `$1${inserted}`);
+  }
+  return xml.replace(/(<Config\b[^>]*>)/i, `$1${inserted}`);
 }
 
 function applyXmlScenario(xml, scenario = {}) {

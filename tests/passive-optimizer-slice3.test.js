@@ -456,10 +456,7 @@ test("optional PoB evaluation reloads baseline, verifies parity, and caches", as
       };
     }
     async call(action, params) {
-      if (action === "set_tree") {
-        state.tree = { ...params };
-        return {};
-      }
+      if (action === "set_tree") throw new Error("set_tree must not be called");
       if (action === "get_tree") return { tree: state.tree };
       if (action === "get_build_info") {
         return { info: {
@@ -475,6 +472,9 @@ test("optional PoB evaluation reloads baseline, verifies parity, and caches", as
         return { skills: { mainSocketGroup: 1, groups: [] } };
       }
       if (action === "get_stats") return { stats: { TotalDPS: 123 } };
+      if (action === "calc_with_stats") {
+        return { stats: { TotalDPS: 123 } };
+      }
       throw new Error(action);
     }
     async close() {}
@@ -501,7 +501,7 @@ test("optional PoB evaluation reloads baseline, verifies parity, and caches", as
   const loadsBeforeCache = state.loadCount;
   const second = await evaluateCandidates(options);
   assert.equal(second.cacheHits, 1);
-  assert.equal(state.loadCount, loadsBeforeCache + 1);
+  assert.equal(state.loadCount, loadsBeforeCache + 2);
   fs.rmSync(buildPath, { force: true });
   fs.rmSync(cachePath, { force: true });
 });

@@ -155,6 +155,7 @@ function fakeClientFactory({
 } = {}) {
   return () => {
     let tree = null;
+    let lastNode = 1;
     function reset() {
       tree = {
         classId: 1,
@@ -164,6 +165,7 @@ function fakeClientFactory({
         nodes: [1],
         masteryEffects: [],
       };
+      lastNode = 1;
     }
     reset();
     return new class FakeClient {
@@ -176,22 +178,29 @@ function fakeClientFactory({
       }
       async call(action, params) {
         if (action === "set_tree") {
-          const node = Math.max(...params.nodes);
-          counters.setTree = (counters.setTree || 0) + 1;
+          throw new Error("set_tree must not be called");
+        }
+        if (action === "calc_with_stats") {
+          const node = Math.max(1, ...(params.addNodes || []));
+          lastNode = node;
+          counters.calcWithStats = (counters.calcWithStats || 0) + 1;
           if (node === timeoutNode) {
             throw new Error("PoB2 response timed out after 10 ms");
           }
-          tree = { ...params };
-          return {};
+          if (node === failureNode) {
+            throw new Error("calc_with_stats: synthetic failure");
+          }
+          return {
+            stats: metricsByNode[node] || { TotalDPS: 100, Life: 100 },
+          };
         }
         if (action === "get_tree") return { tree };
         if (action === "get_build_info") {
           return { info: baselineSnapshot().info };
         }
         if (action === "get_config") {
-          const node = Math.max(...tree.nodes);
           return {
-            config: node === driftNode
+            config: lastNode === driftNode
               ? { enemyLevel: 84 }
               : baselineSnapshot().config,
           };
@@ -203,10 +212,8 @@ function fakeClientFactory({
           return { skills: baselineSnapshot().skills };
         }
         if (action === "get_stats") {
-          const node = Math.max(...tree.nodes);
-          if (node === failureNode) throw new Error("get_stats: synthetic failure");
           return {
-            stats: metricsByNode[node] || { TotalDPS: 100, Life: 100 },
+            stats: { TotalDPS: 100, Life: 100, TotalEHP: 200 },
           };
         }
         throw new Error(action);
@@ -366,7 +373,7 @@ test("checkpoint resume is idempotent and does not repeat candidate jobs", async
   });
   assert.equal(resumed.budget.pobCalls, 0);
   assert.equal(resumed.resumed, 2);
-  assert.equal(resumedCounters.setTree || 0, 0);
+  assert.equal(resumedCounters.calcWithStats || 0, 0);
   fs.rmSync(files.root, { recursive: true, force: true });
 });
 
@@ -430,6 +437,62 @@ test("real Pareto updates remain separate from cheap dominance", async () => {
   assert.equal(result.diagnostics.realImprovements, 2);
   assert.equal(result.baseline.finalBaselineRestored, true);
   assert.equal(result.baseline.buildUnchanged, true);
+  fs.rmSync(files.root, { recursive: true, force: true });
+});
+
+test("adaptive rescue expands a failed initial sample without exceeding hard cap", async () => {
+  const files = temporaryFiles("adaptive-rescue");
+  const baseline = shortlistEntry(0, 1000, 0, {
+    calibrationKind: "baseline",
+    calibrationTier: "baseline",
+    cheapPruned: false,
+    families: [],
+  });
+  const candidates = Array.from({ length: 15 }, (_, index) => {
+    const node = index + 10;
+    return shortlistEntry(node, 100 - index, 0, {
+      calibrationKind: index < 2 ? "near-baseline" : "candidate",
+      calibrationTier: index < 2 ? "adjacent" : "ordinary",
+      changedNodeCount: index < 2 ? index + 1 : 3 + index % 2,
+      cheapPruned: index >= 5,
+      families: index % 2
+        ? ["defense@travel_corridor:100.200"]
+        : ["damage.attack@travel_corridor:300.400"],
+      moveHistory: [{ type: index % 3 ? "add" : "reroute" }],
+      uncertainty: index,
+    });
+  });
+  const metricsByNode = Object.fromEntries(candidates.map((value, index) => [
+    value.changedNodeIds[0],
+    { TotalDPS: 90 + Math.min(index, 9), Life: 100 },
+  ]));
+  const result = await evaluateSelectiveCandidates({
+    buildPath: files.buildPath,
+    shortlist: [baseline, ...candidates],
+    objectiveSet: OBJECTIVE_SET,
+    enemyProfile: { enemy: "boss" },
+    treeData: { hash: "tree-a", treeVersion: "test" },
+    runtimeMeta: runtimeMeta(),
+    clientFactory: fakeClientFactory({ metricsByNode }),
+    evaluationLimit: 11,
+    rescueLimit: 4,
+    minimumSample: 8,
+    selectionMix: { predictedBest: 1 },
+    seed: 42,
+  });
+
+  assert.equal(result.adaptiveRescue.triggered, true);
+  assert.equal(result.adaptiveRescue.initialGate.passed, false);
+  assert.equal(result.adaptiveRescue.finalGate.passed, false);
+  assert.equal(result.adaptiveRescue.confidence, "low");
+  assert.equal(result.budget.initialPobCalls, 10);
+  assert.equal(result.budget.rescuePobCalls, 4);
+  assert.equal(result.budget.pobCalls, 14);
+  assert.equal(result.budget.hardCap, 15);
+  assert.equal(result.selection.rescueSelected.length, 4);
+  assert.equal(new Set(result.results.map((entry) => entry.canonicalKey)).size, 15);
+  assert.equal(result.diagnostics.realImprovements, 0);
+  assert.equal(result.userReport.noImprovementFound, false);
   fs.rmSync(files.root, { recursive: true, force: true });
 });
 

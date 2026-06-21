@@ -15,6 +15,9 @@ function parseArgs(argv) {
     else if (arg === "--output") args.output = path.resolve(argv[++index]);
     else if (arg === "--current-runtime") args.currentRuntime = argv[++index];
     else if (arg === "--top") args.top = Number(argv[++index]);
+    else if (arg === "--item-profile") {
+      args.itemProfile = path.resolve(argv[++index]);
+    }
     else if (arg === "--full-stdout") args.fullStdout = true;
     else if (arg === "--quiet") args.quiet = true;
     else throw new Error(`Unknown argument: ${arg}`);
@@ -80,17 +83,40 @@ function parseItem(item) {
   const nonRuneEnchantCount = (
     raw.match(/^\{enchant\}(?!\{rune\}).+$/gm) || []
   ).length;
+  const socketable = isSocketableType(item.type);
+  const creatableSockets =
+    socketable && !corrupted && socketCount === 0 ? 1 : 0;
   return {
     slot: item.slot,
     name: item.name,
     type: item.type,
     socketCount,
-    emptySockets: inferredEmptySockets,
+    existingEmptySockets: inferredEmptySockets,
+    creatableSockets,
     runes: runeLines.filter((rune) => rune !== "None"),
     quality: Number.isFinite(quality) ? quality : null,
     corrupted,
     nonRuneEnchantCount,
   };
+}
+
+function isSocketableType(typeInput) {
+  const type = String(typeInput || "").toLowerCase();
+  return [
+    "helmet",
+    "gloves",
+    "boots",
+    "body armour",
+    "crossbow",
+    "bow",
+    "spear",
+    "mace",
+    "axe",
+    "sword",
+    "quarterstaff",
+    "shield",
+    "focus",
+  ].includes(type);
 }
 
 function runeSlots(item) {
@@ -141,7 +167,7 @@ function needPatterns(stats, goals) {
 }
 
 function recommendationsFor(item, catalog, needs, top) {
-  if (!item.emptySockets) return [];
+  if (!(item.existingEmptySockets || item.creatableSockets)) return [];
   const slots = new Set(runeSlots(item));
   const rows = [];
   for (const entry of catalog) {
@@ -157,6 +183,10 @@ function recommendationsFor(item, catalog, needs, top) {
           effect,
           need: need.id,
           rank: entry.rank,
+          runeTier: Number(entry.rank || 0) >= 3 ? "expensive" : "temporary",
+          recoverable: false,
+          requiresSocketCreation:
+            item.existingEmptySockets === 0 && item.creatableSockets > 0,
           score: need.deficit * 100 + magnitude,
         });
       }
@@ -193,7 +223,29 @@ function recommendationsFor(item, catalog, needs, top) {
     }
   }
   return selected
+    .filter((row) =>
+      row.runeTier !== "expensive" ||
+      item.replacementHorizon === "transition anchor")
     .map(({ score, ...row }) => row);
+}
+
+function completionModel(item, profile = {}) {
+  const slotProfile = profile[item.slot] || profile[item.type] || {};
+  const replacementHorizon = [
+    "temporary",
+    "medium-lived",
+    "transition anchor",
+    "unknown",
+  ].includes(slotProfile.replacementHorizon)
+    ? slotProfile.replacementHorizon
+    : "unknown";
+  return {
+    ...item,
+    replacementHorizon,
+    transitionCompatibility:
+      slotProfile.transitionCompatibility || "unknown",
+    replacementProfiles: (slotProfile.replacementProfiles || []).slice(0, 3),
+  };
 }
 
 async function main() {
@@ -221,9 +273,13 @@ async function main() {
       ? JSON.parse(fs.readFileSync(args.baseline, "utf8"))
       : null;
     const stats = baseline?.stats || measuredStats;
+    const itemProfile = args.itemProfile
+      ? JSON.parse(fs.readFileSync(args.itemProfile, "utf8"))
+      : {};
     const items = (await client.call("get_items")).items
       .filter((item) => item.id && item.raw)
-      .map(parseItem);
+      .map(parseItem)
+      .map((item) => completionModel(item, itemProfile));
     const needs = needPatterns(stats, args.goals);
     const opportunities = items
       .map((item) => ({
@@ -245,8 +301,13 @@ async function main() {
           needs,
           args.top,
         ),
+        socketCreationOpportunity: item.creatableSockets > 0,
+        socketCreationCost: item.creatableSockets > 0 ? "separate" : null,
       }))
-      .filter((item) => item.emptySockets || item.qualityOpportunity);
+      .filter((item) =>
+        item.existingEmptySockets ||
+        item.creatableSockets ||
+        item.qualityOpportunity);
     const result = {
       build: path.basename(args.build),
       runtime: {
@@ -262,6 +323,8 @@ async function main() {
         "Do not apply socket or enchant changes automatically.",
         "Verify in-game replacement, corruption, bonding, and crafting restrictions before committing.",
         "An empty socket is an upgrade opportunity before replacing the entire item.",
+        "Creatable sockets and rune acquisition are separate costs.",
+        "Do not recommend an expensive non-recoverable rune without replacement-horizon evidence.",
       ],
     };
     if (args.output) {
@@ -276,12 +339,16 @@ async function main() {
             opportunities: opportunities.slice(0, 8).map((item) => ({
               slot: item.slot,
               item: item.name,
-              emptySockets: item.emptySockets,
+              existingEmptySockets: item.existingEmptySockets,
+              creatableSockets: item.creatableSockets,
+              socketCreationOpportunity: item.socketCreationOpportunity,
               quality: item.quality,
               qualityOpportunity: item.qualityOpportunity,
               corrupted: item.corrupted,
               enchantState: item.enchantState,
               runeRecommendations: item.runeRecommendations,
+              replacementHorizon: item.replacementHorizon,
+              transitionCompatibility: item.transitionCompatibility,
             })),
             omittedOpportunities: Math.max(0, opportunities.length - 8),
             output: args.output ? path.basename(args.output) : null,
@@ -293,7 +360,16 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  completionModel,
+  isSocketableType,
+  parseItem,
+  recommendationsFor,
+};

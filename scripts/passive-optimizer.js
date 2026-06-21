@@ -50,6 +50,13 @@ const {
 } = require("./lib/passive-optimizer/search");
 const { loadTreeGraph } = require("./lib/passive-optimizer/tree-importer");
 const { validateCandidate } = require("./lib/passive-optimizer/validator");
+const {
+  deriveActiveMechanics,
+} = require("./lib/passive-optimizer/mechanic-relevance");
+const {
+  sha256,
+  stableStringify,
+} = require("./lib/passive-optimizer/stable");
 
 const COMMANDS = [
   "validate",
@@ -58,6 +65,7 @@ const COMMANDS = [
   "inspect",
   "score",
   "search",
+  "report",
 ];
 
 const HELP = `Passive tree optimizer (experimental)
@@ -72,6 +80,7 @@ Commands:
   inspect   Rank extracted packages for a profile
   score     Score one package or explicit delta
   search    Run low-respec or medium-rebuild search
+  report    Summarize or inspect an existing full artifact
 
 Required data:
   --snapshot DIR          Tree snapshot containing manifest.json and data.json
@@ -89,9 +98,13 @@ Portable configuration:
 Search:
   --respec-limit N        Bound changed allocations
   --max-changes N         Bound changed nodes
+  --add-only              Allow zero removed nodes
+  --points N              Require exactly N added nodes in final candidates
+  --max-removals N        Bound removed nodes
   --medium-rebuild        Enable the slice-4 20-30-node search
   --preset NAME           auto, slow, moderate, or fast
   --evaluation-limit N    Exact PoB evaluation budget
+  --rescue-limit N        Additional adaptive exact calls after a failed gate
   --runtime-limit-ms N    Overall runtime budget
   --objective-set VALUE   JSON file or field:max,field:min objective list
   --selection-mix VALUE   best/uncertainty/diverse/adjacent/random weights
@@ -101,6 +114,12 @@ Search:
   --cache FILE            Optional exact-evaluation cache
   --checkpoint FILE       Resumable selective-evaluation checkpoint
   --resume                Resume the matching checkpoint idempotently
+  --summary FILE          Write compact stage summary
+  --stdout-mode MODE      compact, silent, or debug (default: compact)
+  --summary-max-candidates N  Maximum Pareto representatives (default: 6)
+  --summary-max-failures N    Maximum failure digest rows (default: 8)
+  --inspect-candidate ID  Return one candidate from an artifact
+  --explain-rejection ID  Return one rejected candidate and reason codes
 
 Output:
   --output FILE           Full JSON artifact (default: ./artifacts/...)
@@ -141,15 +160,25 @@ function parseArgs(argv) {
     mediumRebuild: false,
     includeReroutes: true,
     evaluationBatchSize: 4,
+    rescueLimit: 0,
     nearBaselineCount: 2,
     minimumSample: 8,
+    minAdded: 0,
+    stdoutMode: "compact",
+    summaryMaxCandidates: 6,
+    summaryMaxFailures: 8,
     explicit: {},
   };
   if (argv.includes("--help") || argv.includes("-h") || !argv[2]) {
     args.help = true;
     return args;
   }
-  for (let index = 3; index < argv.length; index += 1) {
+  if (args.command === "report") args.reportCommand = argv[3] || "summarize";
+  for (
+    let index = args.command === "report" ? 4 : 3;
+    index < argv.length;
+    index += 1
+  ) {
     const arg = argv[index];
     if (arg === "--build") args.build = path.resolve(argv[++index]);
     else if (arg === "--candidate") args.candidate = path.resolve(argv[++index]);
@@ -161,6 +190,22 @@ function parseArgs(argv) {
     else if (arg === "--scorer-config") {
       args.scorerConfig = path.resolve(argv[++index]);
     } else if (arg === "--output") args.output = path.resolve(argv[++index]);
+    else if (arg === "--artifact") args.artifact = path.resolve(argv[++index]);
+    else if (arg === "--summary") args.summary = path.resolve(argv[++index]);
+    else if (arg === "--stdout-mode") args.stdoutMode = argv[++index];
+    else if (arg === "--summary-max-candidates") {
+      args.summaryMaxCandidates = Number(argv[++index]);
+    }
+    else if (arg === "--summary-max-failures") {
+      args.summaryMaxFailures = Number(argv[++index]);
+    }
+    else if (arg === "--inspect-candidate") {
+      args.inspectCandidate = argv[++index];
+    }
+    else if (arg === "--explain-rejection") {
+      args.explainRejection = argv[++index];
+    }
+    else if (arg === "--no-raw-stdout") args.noRawStdout = true;
     else if (arg === "--snapshot") args.snapshot = path.resolve(argv[++index]);
     else if (arg === "--config") args.config = path.resolve(argv[++index]);
     else if (arg === "--pob-runtime") {
@@ -218,6 +263,22 @@ function parseArgs(argv) {
     else if (arg === "--selection-mix") {
       args.selectionMix = normalizeSelectionMix(argv[++index]);
     }
+    else if (arg === "--rescue-limit" || arg === "--evaluation-rescue-limit") {
+      args.rescueLimit = Number(argv[++index]);
+      args.explicit.rescueLimit = true;
+    }
+    else if (arg === "--add-only") {
+      args.addOnly = true;
+      args.maxRemovals = 0;
+    }
+    else if (arg === "--points") {
+      args.minAdded = Number(argv[++index]);
+      args.maxAdded = args.minAdded;
+      args.explicit.points = true;
+    }
+    else if (arg === "--max-removals") {
+      args.maxRemovals = Number(argv[++index]);
+    }
     else if (arg === "--batch-size" || arg === "--evaluation-batch-size") {
       args.evaluationBatchSize = Number(argv[++index]);
     }
@@ -253,8 +314,14 @@ function parseArgs(argv) {
     else if (arg === "--approve-rebuild") args.approveRebuild = true;
     else if (arg === "--medium-rebuild") args.mediumRebuild = true;
     else if (arg === "--no-reroutes") args.includeReroutes = false;
-    else if (arg === "--quiet") args.quiet = true;
-    else if (arg === "--full-stdout") args.fullStdout = true;
+    else if (arg === "--quiet") {
+      args.quiet = true;
+      args.stdoutMode = "silent";
+    }
+    else if (arg === "--full-stdout") {
+      args.fullStdout = true;
+      args.stdoutMode = "debug";
+    }
     else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!COMMANDS.includes(args.command)) {
@@ -274,16 +341,26 @@ function parseArgs(argv) {
   if (args.command === "search" && args.evaluationLimit > 0 && !args.build) {
     throw new Error("search --pob-limit requires --build");
   }
+  if (args.command === "search" && args.rescueLimit > 0 && !args.build) {
+    throw new Error("search --rescue-limit requires --build");
+  }
+  if (!["compact", "silent", "debug"].includes(args.stdoutMode)) {
+    throw new Error("--stdout-mode must be compact, silent, or debug");
+  }
+  if (args.command === "report") {
+    if (!args.artifact) throw new Error("report requires --artifact FILE");
+    return args;
+  }
   if (args.resume && !args.checkpoint) {
     throw new Error("--resume requires --checkpoint FILE");
   }
   if (
-    (args.checkpoint || args.selectionMix) &&
+    (args.checkpoint || args.selectionMix || args.rescueLimit > 0) &&
     !args.objectiveSet &&
     !args.metrics?.length
   ) {
     throw new Error(
-      "--checkpoint/--selection-mix require --objective-set or --metrics",
+      "--checkpoint/--selection-mix/--rescue-limit require --objective-set or --metrics",
     );
   }
   const canLoadCandidateFromPackages =
@@ -328,6 +405,7 @@ async function importBuild(graph, args) {
     const info = (await client.call("get_build_info")).info;
     const tree = (await client.call("get_tree")).tree;
     const config = (await client.call("get_config")).config;
+    const skills = (await client.call("get_skills")).skills;
     const xml = fs.readFileSync(args.build, "utf8");
     const state = buildStateFromPob({
       graph,
@@ -364,6 +442,8 @@ async function importBuild(graph, args) {
         apiVersion: runtime.apiVersion,
         apiPatchVersion: runtime.apiPatchVersion,
       },
+      skills,
+      activeMechanics: deriveActiveMechanics(skills),
     };
   } finally {
     await client.close();
@@ -387,6 +467,150 @@ function loadDelta(value) {
       ? JSON.parse(trimmed)
       : readJson(path.resolve(trimmed));
   return normalizeDelta(parsed.delta || parsed);
+}
+
+function artifactCandidates(artifact) {
+  return [
+    ...(artifact.pobEvaluation?.results || []),
+    ...(artifact.search?.archive || []),
+    ...(artifact.search?.calibrationPool || []),
+  ];
+}
+
+function inspectArtifactCandidate(artifact, id, rejectionOnly = false) {
+  const match = artifactCandidates(artifact).find((entry) =>
+    [entry.canonicalKey, entry.jobId, entry.cacheKey].includes(id));
+  if (!match) throw new Error(`Unknown candidate ID: ${id}`);
+  if (rejectionOnly) {
+    return {
+      candidateId: match.canonicalKey || match.jobId,
+      status: match.status,
+      accepted: match.accepted,
+      reasonCodes: match.reasonCodes || [],
+      error: match.error || null,
+      drift: (match.drift || []).map((entry) => ({
+        field: entry.field,
+        beforeHash: entry.before
+          ? sha256(stableStringify(entry.before))
+          : null,
+        afterHash: entry.after
+          ? sha256(stableStringify(entry.after))
+          : null,
+      })),
+      warnings: match.rejectionWarnings || [],
+      nodeExplanations: match.nodeExplanations || [],
+    };
+  }
+  return match;
+}
+
+function buildStageSummary(artifact, options = {}) {
+  const maxCandidates = Math.max(1, Number(options.maxCandidates || 6));
+  const maxFailures = Math.max(1, Number(options.maxFailures || 8));
+  const exact = artifact.pobEvaluation;
+  const representatives =
+    exact?.realArchive?.representatives?.length
+      ? exact.realArchive.representatives
+      : artifact.search?.representatives || [];
+  const failures = (exact?.results || [])
+    .filter((entry) => entry.status && entry.status !== "success")
+    .slice(0, maxFailures)
+    .map((entry) => ({
+      candidateId: entry.canonicalKey || entry.jobId,
+      status: entry.status,
+      error: entry.error || null,
+      driftFields: (entry.drift || []).map((item) => item.field),
+    }));
+  const summary = {
+    stage: artifact.command || "search",
+    baselineRef: artifact.build?.sha256 || null,
+    identity: {
+      buildHash: exact?.buildHash || artifact.build?.sha256 || null,
+      scenarioHash: exact?.scenario?.scenarioHash || null,
+      profileHash: artifact.profile
+        ? sha256(stableStringify(artifact.profile))
+        : null,
+      runtime: exact?.runtime || artifact.runtime || null,
+    },
+    counts: {
+      generated: artifact.search?.counts?.generated || 0,
+      repaired: artifact.search?.counts?.repaired || 0,
+      invalid: artifact.search?.counts?.invalid || 0,
+      duplicate: artifact.search?.counts?.duplicate || 0,
+      pruned: Math.max(
+        0,
+        Number(artifact.search?.counts?.usable || 0) -
+          Number(artifact.search?.archiveSize || 0),
+      ),
+      retained: artifact.search?.archiveSize || 0,
+      pobCalls: exact?.budget?.pobCalls || exact?.checked || 0,
+      initialPobCalls: exact?.budget?.initialPobCalls || 0,
+      rescuePobCalls: exact?.budget?.rescuePobCalls || 0,
+      cacheHits: exact?.cacheHits || 0,
+      failures: exact?.failures || 0,
+      drift: exact?.drifted || 0,
+    },
+    timingMs: {
+      search: artifact.search?.runtime?.elapsedMs || 0,
+      pob: exact?.timing?.wallMs || exact?.elapsedMs || 0,
+    },
+    calibration: {
+      spearman: exact?.diagnostics?.cheapVsPobSpearman ?? null,
+      topKRecall: exact?.diagnostics?.topKRecall ?? null,
+      regret: exact?.diagnostics?.regret ?? null,
+      falseNegativeRate:
+        exact?.diagnostics?.falseNegativePruning?.rate ?? null,
+      falseNegativeScope:
+        exact?.diagnostics?.falseNegativePruning?.scope ?? null,
+      cheapPrunedCoverage:
+        exact?.diagnostics?.falseNegativePruning?.coverage ?? null,
+      confidence: exact?.adaptiveRescue?.confidence ?? null,
+      rescueTriggered: exact?.adaptiveRescue?.triggered ?? false,
+    },
+    pareto: representatives.slice(0, maxCandidates).map((entry) => ({
+      candidateId: entry.canonicalKey,
+      roles: entry.representativeLabels || [],
+      added: entry.candidateSummary?.addedNodeIds || entry.delta?.addNodeIds || [],
+      removed:
+        entry.candidateSummary?.removedNodeIds || entry.delta?.removeNodeIds || [],
+      nodeExplanations: (
+        entry.nodeExplanations ||
+        entry.candidateSummary?.nodeExplanations ||
+        []
+      ).map((node) => ({
+        nodeId: node.nodeId,
+        name: node.name,
+        reason: node.reason,
+      })),
+      metrics: Object.fromEntries(
+        Object.entries(entry.objectives || entry.metrics || {}).slice(0, 8),
+      ),
+      cost: {
+        points: entry.candidateSummary?.pointCost ??
+          entry.costs?.marginal?.add ?? null,
+        respec: entry.candidateSummary?.respecCost ??
+          entry.objectives?.respecCost ?? null,
+      },
+      confidence: entry.confidence ?? null,
+      warnings: entry.rejectionWarnings || [],
+    })),
+    failures,
+    nextGate: failures.length
+      ? "inspect_failure"
+      : exact?.adaptiveRescue?.confidence === "low"
+        ? "low_confidence"
+        : "ready",
+    tokenEfficiency: {
+      toolCalls: null,
+      fullArtifactsOpenedByLlm: 0,
+      rawCandidatesShownToLlm: 0,
+      estimatedLlmInputTokens: null,
+      estimatedLlmOutputTokens: null,
+    },
+  };
+  const text = `${JSON.stringify(summary, null, 2)}\n`;
+  summary.tokenEfficiency.summaryBytes = Buffer.byteLength(text);
+  return summary;
 }
 
 function loadObjectiveSet(args) {
@@ -470,6 +694,9 @@ function compactResult(artifact, output, limit) {
               artifact.pobEvaluation.elapsedMs,
             timing: artifact.pobEvaluation.timing,
             budget: artifact.pobEvaluation.budget,
+            adaptiveRescue: artifact.pobEvaluation.adaptiveRescue,
+            falseNegativePruning:
+              artifact.pobEvaluation.diagnostics?.falseNegativePruning,
             realImprovements:
               artifact.pobEvaluation.diagnostics?.realImprovements,
             realParetoRepresentatives:
@@ -595,6 +822,25 @@ async function main() {
     process.stdout.write(HELP);
     return;
   }
+  if (args.command === "report") {
+    const artifact = readJson(args.artifact);
+    const result = args.inspectCandidate
+      ? inspectArtifactCandidate(artifact, args.inspectCandidate, false)
+      : args.explainRejection
+        ? inspectArtifactCandidate(artifact, args.explainRejection, true)
+        : buildStageSummary(artifact, {
+            maxCandidates: args.summaryMaxCandidates,
+            maxFailures: args.summaryMaxFailures,
+          });
+    if (args.output) {
+      fs.mkdirSync(path.dirname(args.output), { recursive: true });
+      fs.writeFileSync(args.output, `${JSON.stringify(result, null, 2)}\n`);
+    }
+    if (args.stdoutMode !== "silent") {
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    }
+    return;
+  }
   const graph = loadTreeGraph(args.snapshot, { configPath: args.config });
   const packageArtifact = args.packages ? readJson(args.packages) : null;
   let imported;
@@ -654,7 +900,10 @@ async function main() {
   }
 
   if (args.command === "inspect") {
-    const profile = readJson(args.profile);
+    const profile = {
+      ...readJson(args.profile),
+      activeMechanics: imported?.activeMechanics || [],
+    };
     artifact.profile = profile;
     artifact.rankedPackages = rankPackages({
       graph,
@@ -668,7 +917,10 @@ async function main() {
   }
 
   if (args.command === "score") {
-    const profile = readJson(args.profile);
+    const profile = {
+      ...readJson(args.profile),
+      activeMechanics: imported?.activeMechanics || [],
+    };
     const scorerConfig = args.scorerConfig ? readJson(args.scorerConfig) : {};
     const baselineMetrics = args.baseline ? readJson(args.baseline) : null;
     const pkg = args.packageId
@@ -693,7 +945,10 @@ async function main() {
   }
 
   if (args.command === "search") {
-    const profile = readJson(args.profile);
+    const profile = {
+      ...readJson(args.profile),
+      activeMechanics: imported?.activeMechanics || [],
+    };
     const scorerConfig = args.scorerConfig ? readJson(args.scorerConfig) : {};
     const baselineMetrics = args.baseline ? readJson(args.baseline) : null;
     if (!artifact.packageExtraction) {
@@ -757,6 +1012,11 @@ async function main() {
       seed: args.seed,
       diversityBucketCap: args.diversityBucketCap ??
         (args.mediumRebuild ? preset.diversityBucketCap : undefined),
+      maxRemovals: Number.isFinite(args.maxRemovals)
+        ? args.maxRemovals
+        : undefined,
+      minAdded: args.minAdded,
+      maxAdded: args.explicit.points ? args.maxAdded : undefined,
     };
     let nearBaselineSearch = null;
     if (args.mediumRebuild) {
@@ -855,6 +1115,7 @@ async function main() {
             treeData: graph.source,
             currentRuntime: runtimeRequest(args),
             evaluationLimit,
+            rescueLimit: args.rescueLimit,
             runtimeLimitMs: remainingRuntimeMs,
             batchSize: args.evaluationBatchSize,
             selectionMix: args.selectionMix,
@@ -864,6 +1125,7 @@ async function main() {
             resume: args.resume,
             nearBaselineCount: args.nearBaselineCount,
             minimumSample: args.minimumSample,
+            scenario: profile.scenario,
           })
         : await evaluateCandidates({
             buildPath: args.build,
@@ -875,6 +1137,7 @@ async function main() {
             count: evaluationLimit,
             cachePath: args.cache,
             runtimeLimitMs: remainingRuntimeMs,
+            scenario: profile.scenario,
           });
     }
   }
@@ -882,10 +1145,22 @@ async function main() {
   const output = args.output || defaultOutput(args);
   fs.mkdirSync(path.dirname(output), { recursive: true });
   fs.writeFileSync(output, `${JSON.stringify(artifact, null, 2)}\n`);
-  if (!args.quiet) {
+  const summary = buildStageSummary(artifact, {
+    maxCandidates: args.summaryMaxCandidates,
+    maxFailures: args.summaryMaxFailures,
+  });
+  if (args.summary) {
+    fs.mkdirSync(path.dirname(args.summary), { recursive: true });
+    fs.writeFileSync(args.summary, `${JSON.stringify(summary, null, 2)}\n`);
+  }
+  if (args.stdoutMode !== "silent") {
     process.stdout.write(
       `${JSON.stringify(
-        args.fullStdout ? artifact : compactResult(artifact, output, args.limit),
+        args.stdoutMode === "debug"
+          ? artifact
+          : artifact.search
+            ? summary
+            : compactResult(artifact, output, args.limit),
         null,
         2,
       )}\n`,

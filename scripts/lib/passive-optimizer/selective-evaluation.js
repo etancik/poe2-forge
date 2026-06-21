@@ -3,15 +3,23 @@
 const fs = require("fs");
 const path = require("path");
 const { performance } = require("perf_hooks");
-const { PobClient, resolveRuntime } = require("../pob-client");
+const {
+  PobClient,
+  applyXmlScenario,
+  resolveRuntime,
+} = require("../pob-client");
 const {
   drift,
   observableSnapshot,
-  parity,
+  passiveDelta,
   runtimeIdentity,
-  treeParams,
 } = require("./pob-smoke");
 const {
+  applyAndVerifyScenario,
+  normalizeScenario,
+} = require("./scenario");
+const {
+  calibrationTier,
   epsilonParetoArchive,
   jaccardDistance,
 } = require("./search");
@@ -20,10 +28,10 @@ const {
   stableStringify,
 } = require("./stable");
 
-const SELECTIVE_EVALUATION_VERSION = 3;
-const CACHE_SCHEMA_VERSION = 3;
-const CHECKPOINT_SCHEMA_VERSION = 2;
-const OBJECTIVE_EXTRACTOR_VERSION = 3;
+const SELECTIVE_EVALUATION_VERSION = 7;
+const CACHE_SCHEMA_VERSION = 7;
+const CHECKPOINT_SCHEMA_VERSION = 6;
+const OBJECTIVE_EXTRACTOR_VERSION = 5;
 const DEFAULT_MINIMUM_SAMPLE = 8;
 const DEFAULT_NEAR_BASELINE_COUNT = 2;
 const DEFAULT_SELECTION_MIX = Object.freeze({
@@ -40,6 +48,17 @@ function finiteNumber(value, fallback = null) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+function normalizeObjectiveKind(entry, role) {
+  const explicit = String(entry.kind || entry.category || "").trim().toLowerCase();
+  if (explicit && !["performance", "cost"].includes(explicit)) {
+    throw new Error(`Invalid objective kind for ${entry.name || entry.field}: ${explicit}`);
+  }
+  if (explicit) return explicit;
+  return String(role || "").toLowerCase().startsWith("cost.")
+    ? "cost"
+    : "performance";
+}
+
 function normalizeObjectiveSet(value) {
   const source = Array.isArray(value)
     ? { objectives: value }
@@ -47,7 +66,16 @@ function normalizeObjectiveSet(value) {
   const objectives = (source.objectives || source.metrics || [])
     .map((entry) => {
       if (typeof entry === "string") {
-        return { name: entry, field: entry, direction: "max" };
+        return {
+          name: entry,
+          field: entry,
+          direction: "max",
+          source: "pob",
+          skill: null,
+          role: null,
+          kind: "performance",
+          optional: false,
+        };
       }
       const field = String(entry.field || entry.name || "").trim();
       if (!field) return null;
@@ -55,13 +83,15 @@ function normalizeObjectiveSet(value) {
       if (!["max", "min"].includes(direction)) {
         throw new Error(`Invalid objective direction for ${field}: ${direction}`);
       }
+      const role = entry.role ? String(entry.role) : null;
       return {
         name: String(entry.name || field),
         field,
         direction,
         source: String(entry.source || "pob"),
         skill: entry.skill || null,
-        role: entry.role ? String(entry.role) : null,
+        role,
+        kind: normalizeObjectiveKind(entry, role),
         optional: Boolean(entry.optional),
       };
     })
@@ -296,12 +326,75 @@ function selectPobCandidates({
   };
 }
 
+function coarseRole(value) {
+  const role = String(value || "").split("@")[0].toLowerCase();
+  if (
+    role.startsWith("damage") ||
+    role.startsWith("role.projectile") ||
+    role.startsWith("role.totem") ||
+    role.startsWith("role.crossbow") ||
+    role.startsWith("role.offensive") ||
+    role.startsWith("attack.")
+  ) return "damage";
+  if (role.startsWith("defense") || role.startsWith("role.defensive")) {
+    return "defense";
+  }
+  if (role.startsWith("recovery") || role.startsWith("role.recovery")) {
+    return "recovery";
+  }
+  if (role.startsWith("mobility")) return "mobility";
+  if (role.startsWith("resources")) return "resources";
+  if (role.startsWith("accuracy")) return "accuracy";
+  return null;
+}
+
+function dominantStructuralRole(entry) {
+  const roles = [
+    ...(entry.families || []).map(coarseRole),
+    ...(entry.nodeExplanations || []).flatMap((explanation) =>
+      (explanation.tags || []).map(coarseRole)),
+  ].filter(Boolean);
+  if (roles.length === 0) return "unclassified";
+  const counts = new Map();
+  for (const role of roles) counts.set(role, (counts.get(role) || 0) + 1);
+  const highest = Math.max(...counts.values());
+  const leaders = [...counts.entries()]
+    .filter(([, count]) => count === highest)
+    .map(([role]) => role)
+    .sort();
+  return leaders.length === 1 ? leaders[0] : "mixed";
+}
+
+function structuralMoveType(entry) {
+  const types = new Set([
+    entry.transaction?.type,
+    ...(entry.moveHistory || []).map((move) => move.type),
+  ].filter(Boolean));
+  for (const type of ["reroute", "swap", "remove", "add"]) {
+    if (types.has(type)) return type;
+  }
+  return Number(entry.changedNodeCount || 0) === 0 ? "baseline" : "unknown";
+}
+
+function changeSizeBand(changedNodeCount) {
+  const changed = Math.max(0, Number(changedNodeCount) || 0);
+  if (changed === 0) return "0";
+  if (changed === 1) return "1";
+  if (changed === 2) return "2";
+  if (changed <= 4) return "3-4";
+  return "5+";
+}
+
 function structuralBucket(entry) {
-  const families = [...new Set(entry.families || [])].sort();
-  const transactionType = entry.transaction?.type ||
-    entry.moveHistory?.[0]?.type ||
-    "unknown";
-  return `${families.join("+") || "unclassified"}@${transactionType}`;
+  return [
+    dominantStructuralRole(entry),
+    structuralMoveType(entry),
+    changeSizeBand(entry.changedNodeCount),
+  ].join("@");
+}
+
+function entryCalibrationTier(entry) {
+  return entry.calibrationTier || calibrationTier(entry.changedNodeCount);
 }
 
 function quantileOrder(entries) {
@@ -342,6 +435,94 @@ function structuralRoleOrder(entries) {
   return result;
 }
 
+function selectRescueCandidates({
+  shortlist,
+  excludedKeys = [],
+  limit,
+  seed = 0,
+}) {
+  const excluded = new Set(excludedKeys);
+  const remaining = [...new Map(
+    (shortlist || [])
+      .filter((entry) => !excluded.has(entry.canonicalKey))
+      .map((entry) => [entry.canonicalKey, entry]),
+  ).values()];
+  const count = Math.min(
+    remaining.length,
+    Math.max(0, Math.floor(Number(limit) || 0)),
+  );
+  const strategies = [
+    {
+      reason: "rescueStructural",
+      entries: structuralRoleOrder(remaining),
+    },
+    {
+      reason: "rescueCheapQuantile",
+      entries: quantileOrder(remaining),
+    },
+    {
+      reason: "rescueCheapPruned",
+      entries: quantileOrder(remaining.filter((entry) => entry.cheapPruned)),
+    },
+    {
+      reason: "rescueUncertainty",
+      entries: [...remaining].sort(
+        (left, right) =>
+          Number(right.needsPoB) - Number(left.needsPoB) ||
+          Number(right.objectives?.uncertainty || 0) -
+            Number(left.objectives?.uncertainty || 0) ||
+          compareCheap(left, right),
+      ),
+    },
+    {
+      reason: "rescueSanity",
+      entries: [...remaining].sort(
+        (left, right) =>
+          deterministicRank(seed, left.canonicalKey).localeCompare(
+            deterministicRank(seed, right.canonicalKey),
+          ) ||
+          left.canonicalKey.localeCompare(right.canonicalKey),
+      ),
+    },
+  ];
+  const selected = [];
+  const selectedByKey = new Map();
+  for (let offset = 0; selected.length < count; offset += 1) {
+    let added = false;
+    for (const strategy of strategies) {
+      const entry = strategy.entries[offset];
+      if (!entry) continue;
+      const existing = selectedByKey.get(entry.canonicalKey);
+      if (existing) {
+        if (!existing.selectionReasons.includes(strategy.reason)) {
+          existing.selectionReasons.push(strategy.reason);
+        }
+        continue;
+      }
+      const selectedEntry = {
+        ...entry,
+        calibrationTier: entryCalibrationTier(entry),
+        structuralBucket: structuralBucket(entry),
+        selectionReasons: [strategy.reason],
+        selectionOrder: selected.length,
+        evaluationPhase: "rescue",
+      };
+      selected.push(selectedEntry);
+      selectedByKey.set(entry.canonicalKey, selectedEntry);
+      added = true;
+      if (selected.length >= count) break;
+    }
+    if (!added && strategies.every((strategy) => offset >= strategy.entries.length)) {
+      break;
+    }
+  }
+  return {
+    version: SELECTIVE_EVALUATION_VERSION,
+    limit: count,
+    selected,
+  };
+}
+
 function selectCalibrationCandidates({
   shortlist,
   limit,
@@ -367,6 +548,7 @@ function selectCalibrationCandidates({
     }
     const selectedEntry = {
       ...entry,
+      calibrationTier: entryCalibrationTier(entry),
       structuralBucket: structuralBucket(entry),
       selectionReasons: [reason],
       selectionOrder: selected.length,
@@ -383,11 +565,7 @@ function selectCalibrationCandidates({
   add(baseline, "baseline");
   const near = unique
     .filter((entry) =>
-      entry.calibrationKind === "near-baseline" ||
-      (
-        Number(entry.changedNodeCount || 0) > 0 &&
-        Number(entry.changedNodeCount || 0) <= 4
-      ))
+      entryCalibrationTier(entry) === "adjacent")
     .sort(
       (left, right) =>
         Number(left.changedNodeCount || 0) - Number(right.changedNodeCount || 0) ||
@@ -515,6 +693,7 @@ function completeCacheIdentity({
   objectiveSet,
   enemyProfile,
   treeData,
+  scenario,
 }) {
   return {
     cacheSchemaVersion: CACHE_SCHEMA_VERSION,
@@ -543,6 +722,7 @@ function completeCacheIdentity({
       baseline: baseline.config,
       candidate: candidate.configRelevantState,
     },
+    scenario: scenario || null,
     enemyProfile: enemyProfile || null,
     treeData: {
       hash: treeData?.hash || candidate.treeDataHash,
@@ -640,6 +820,7 @@ async function extractObjectives({
   skills,
   objectiveSet,
   entry,
+  nodeDelta = null,
 }) {
   const metrics = {};
   const objectiveSources = {};
@@ -693,7 +874,14 @@ async function extractObjectives({
       const fields = [...new Set(
         group.objectives.map((objective) => objective.field),
       )].sort();
-      const stats = (await client.call("get_stats", { fields })).stats;
+      const stats = nodeDelta
+        ? (await client.call("calc_with_stats", {
+            addNodes: nodeDelta.addNodes || [],
+            removeNodes: nodeDelta.removeNodes || [],
+            fields,
+            useFullDPS: false,
+          })).stats
+        : (await client.call("get_stats", { fields })).stats;
       for (const objective of group.objectives) {
         const value = finiteNumber(stats?.[objective.field]);
         if (value === null) {
@@ -740,6 +928,7 @@ async function extractObjectives({
 function realObjectiveVector(result, objectiveSet) {
   return Object.fromEntries(objectiveSet.objectives
     .filter((objective) =>
+      objective.kind === "performance" &&
       Number.isFinite(Number(result.objectives?.[objective.name])))
     .map((objective) => [
       objective.name,
@@ -785,7 +974,9 @@ function realParetoArchive(results, objectiveSet) {
 function normalizedUtility(result, baselineObjectives, objectiveSet) {
   if (!result || result.status !== "success") return null;
   let utility = 0;
-  for (const objective of objectiveSet.objectives) {
+  for (const objective of objectiveSet.objectives.filter(
+    (entry) => entry.kind === "performance",
+  )) {
     const baseline = Number(baselineObjectives[objective.name]);
     const measured = Number(result.objectives[objective.name]);
     if (!Number.isFinite(baseline) || !Number.isFinite(measured)) continue;
@@ -797,6 +988,9 @@ function normalizedUtility(result, baselineObjectives, objectiveSet) {
 
 function objectiveEvidence(result, baselineObjectives, objectiveSet) {
   const deltas = {};
+  const performanceDeltas = {};
+  const costDeltas = {};
+  const costs = {};
   let positive = 0;
   let negative = 0;
   for (const objective of objectiveSet.objectives) {
@@ -805,7 +999,7 @@ function objectiveEvidence(result, baselineObjectives, objectiveSet) {
     if (!Number.isFinite(baseline) || !Number.isFinite(measured)) continue;
     const absolute = measured - baseline;
     const directional = (objective.direction === "min" ? -1 : 1) * absolute;
-    deltas[objective.name] = {
+    const delta = {
       baseline,
       measured,
       absolute,
@@ -814,6 +1008,13 @@ function objectiveEvidence(result, baselineObjectives, objectiveSet) {
       improved: directional > 0,
       regressed: directional < 0,
     };
+    deltas[objective.name] = delta;
+    if (objective.kind === "cost") {
+      costDeltas[objective.name] = delta;
+      costs[objective.name] = measured;
+      continue;
+    }
+    performanceDeltas[objective.name] = delta;
     if (directional > 0) positive += 1;
     if (directional < 0) negative += 1;
   }
@@ -824,15 +1025,22 @@ function objectiveEvidence(result, baselineObjectives, objectiveSet) {
       : positive > 0 && negative > 0
         ? "tradeoff"
         : "equal_to_baseline";
+  const performanceUtility = normalizedUtility(
+    result,
+    baselineObjectives,
+    objectiveSet,
+  );
   return {
     ...result,
     objectiveDeltas: deltas,
+    performanceObjectiveDeltas: performanceDeltas,
+    costObjectiveDeltas: costDeltas,
+    performanceComparison: comparison,
+    performanceUtility,
+    costs,
+    // Compatibility aliases. Their semantics are performance-only as of v5.
     baselineComparison: comparison,
-    normalizedUtility: normalizedUtility(
-      result,
-      baselineObjectives,
-      objectiveSet,
-    ),
+    normalizedUtility: performanceUtility,
   };
 }
 
@@ -944,21 +1152,21 @@ function scorerDiagnostics({
       calibrationKind: cheapByKey.get(entry.canonicalKey).calibrationKind,
       structuralBucket: structuralBucket(cheapByKey.get(entry.canonicalKey)),
     }, baselineObjectives, objectiveSet))
-    .filter((entry) => Number.isFinite(entry.normalizedUtility));
+    .filter((entry) => Number.isFinite(entry.performanceUtility));
   const scorerPairs = successful.filter(
     (entry) => entry.calibrationKind !== "baseline",
   );
   const rankCorrelation = spearmanCorrelation(
     scorerPairs,
     (entry) => entry.cheapRankScore,
-    (entry) => entry.normalizedUtility,
+    (entry) => entry.performanceUtility,
   );
   const rankCorrelationInterval = bootstrapInterval(
     scorerPairs,
     (sample) => spearmanCorrelation(
       sample,
       (entry) => entry.cheapRankScore,
-      (entry) => entry.normalizedUtility,
+      (entry) => entry.performanceUtility,
     ),
   );
   const topK = Math.min(5, scorerPairs.length);
@@ -969,32 +1177,44 @@ function scorerDiagnostics({
   );
   const realTop = [...scorerPairs].sort(
     (left, right) =>
-      right.normalizedUtility - left.normalizedUtility ||
+      right.performanceUtility - left.performanceUtility ||
       left.canonicalKey.localeCompare(right.canonicalKey),
   );
   const realTopKeys = new Set(realTop.slice(0, topK).map((entry) => entry.canonicalKey));
   const recalled = cheapTop.slice(0, topK).filter(
     (entry) => realTopKeys.has(entry.canonicalKey),
   ).length;
-  const bestReal = realTop[0]?.normalizedUtility ?? null;
-  const cheapBestReal = cheapTop[0]?.normalizedUtility ?? null;
+  const bestReal = realTop[0]?.performanceUtility ?? null;
+  const cheapBestReal = cheapTop[0]?.performanceUtility ?? null;
   const cheapPareto = new Set(cheapParetoKeys);
   const improvements = scorerPairs.filter(
-    (entry) => entry.baselineComparison === "dominates_baseline",
+    (entry) => entry.performanceComparison === "dominates_baseline",
   );
   const regressions = scorerPairs.filter(
-    (entry) => entry.baselineComparison === "dominated_by_baseline",
+    (entry) => entry.performanceComparison === "dominated_by_baseline",
   );
   const tradeoffs = scorerPairs.filter(
-    (entry) => entry.baselineComparison === "tradeoff",
+    (entry) => entry.performanceComparison === "tradeoff",
   );
   const auditedCheapPruned = scorerPairs.filter(
     (entry) => entry.cheapPruned || !cheapPareto.has(entry.canonicalKey),
   );
+  const totalCheapPruned = shortlist.filter(
+    (entry) =>
+      entry.calibrationKind !== "baseline" &&
+      (entry.cheapPruned || !cheapPareto.has(entry.canonicalKey)),
+  ).length;
+  const unevaluatedCheapPruned = Math.max(
+    0,
+    totalCheapPruned - auditedCheapPruned.length,
+  );
+  const cheapPrunedCoverage = totalCheapPruned > 0
+    ? auditedCheapPruned.length / totalCheapPruned
+    : null;
   const falseNegatives = auditedCheapPruned.filter(
     (entry) =>
-      entry.baselineComparison === "dominates_baseline" ||
-      entry.normalizedUtility > 0,
+      entry.performanceComparison === "dominates_baseline" ||
+      entry.performanceUtility > 0,
   );
   const firstImprovement = improvements
     .map((entry) => finiteNumber(entry.completedOffsetMs))
@@ -1019,6 +1239,17 @@ function scorerDiagnostics({
         "The cheap-pruned false-negative rate is too uncertain for threshold changes.",
     });
   }
+  if (cheapPrunedCoverage !== null && cheapPrunedCoverage < 0.5) {
+    warnings.push({
+      code: "CHEAP_PRUNED_AUDIT_COVERAGE_LOW",
+      audited: auditedCheapPruned.length,
+      unevaluated: unevaluatedCheapPruned,
+      total: totalCheapPruned,
+      coverage: cheapPrunedCoverage,
+      message:
+        "False-negative rate applies only to the audited sample; most cheap-pruned candidates remain unknown.",
+    });
+  }
   const roleBuckets = new Set(scorerPairs.map((entry) => entry.structuralBucket));
   const nearBaseline = scorerPairs.filter(
     (entry) => entry.calibrationKind === "near-baseline",
@@ -1041,6 +1272,7 @@ function scorerDiagnostics({
     limitation = "current_tree_locally_strong";
   }
   return {
+    target: "performanceUtility",
     evaluatedPairs: scorerPairs.length,
     cheapVsPobSpearman: rankCorrelation,
     cheapVsPobSpearmanConfidenceInterval: rankCorrelationInterval,
@@ -1054,6 +1286,12 @@ function scorerDiagnostics({
       count: falseNegatives.length,
       canonicalKeys: falseNegatives.map((entry) => entry.canonicalKey).sort(),
       audited: auditedCheapPruned.length,
+      auditedCheapPruned: auditedCheapPruned.length,
+      unevaluatedCheapPruned,
+      totalCheapPruned,
+      coverage: cheapPrunedCoverage,
+      scope: "audited_sample",
+      globalRate: null,
       rate: auditedCheapPruned.length
         ? falseNegatives.length / auditedCheapPruned.length
         : null,
@@ -1061,6 +1299,14 @@ function scorerDiagnostics({
         falseNegatives.length,
         auditedCheapPruned.length,
       ),
+      confidence:
+        auditedCheapPruned.length >= minimumSample &&
+        (cheapPrunedCoverage === null || cheapPrunedCoverage >= 0.5)
+          ? "moderate"
+          : "low",
+      status: auditedCheapPruned.length === 0
+        ? "unknown"
+        : "sample_estimate",
     },
     realImprovements: improvements.length,
     realRegressions: regressions.length,
@@ -1096,6 +1342,53 @@ function scorerDiagnostics({
         realImprovements: improvements.length,
       },
     },
+  };
+}
+
+function scorerQualityGate(
+  diagnostics,
+  {
+    minimumSample = DEFAULT_MINIMUM_SAMPLE,
+    minimumTopKRecall = 0.6,
+  } = {},
+) {
+  const reasons = [];
+  if (Number(diagnostics?.evaluatedPairs || 0) < minimumSample) {
+    reasons.push("minimum_sample");
+  }
+  if (
+    Number(diagnostics?.topK || 0) >= 3 &&
+    Number(diagnostics?.topKRecall) < minimumTopKRecall
+  ) {
+    reasons.push("top_k_recall");
+  }
+  if (
+    diagnostics?.cheapVsPobSpearmanConfidenceInterval &&
+    diagnostics.cheapVsPobSpearmanConfidenceInterval.high < 0.25
+  ) {
+    reasons.push("rank_correlation");
+  }
+  if (Number(diagnostics?.falseNegativePruning?.count || 0) > 0) {
+    reasons.push("false_negatives");
+  }
+  if (
+    Number(diagnostics?.falseNegativePruning?.totalCheapPruned || 0) > 0 &&
+    diagnostics?.falseNegativePruning?.confidence === "low"
+  ) {
+    reasons.push("cheap_pruned_coverage");
+  }
+  const sampleMet = !reasons.includes("minimum_sample");
+  const coverageMet = !reasons.includes("cheap_pruned_coverage");
+  const recallPassed =
+    Number(diagnostics?.topK || 0) < 3 ||
+    Number(diagnostics?.topKRecall) >= minimumTopKRecall;
+  const conservativeFailure = reasons.some((reason) =>
+    ["rank_correlation", "false_negatives"].includes(reason));
+  return {
+    passed: sampleMet && coverageMet && (recallPassed || !conservativeFailure),
+    minimumSample,
+    minimumTopKRecall,
+    reasons,
   };
 }
 
@@ -1139,7 +1432,7 @@ function representativeRealPareto(results, objectiveSet, baselineObjectives) {
   );
   labelWinner(
     "balanced",
-    (entry) => entry.normalizedUtility,
+    (entry) => entry.performanceUtility,
     () => "Best aggregate measured objective delta.",
   );
   labelWinner(
@@ -1208,6 +1501,9 @@ async function evaluateSelectiveCandidates({
   resume = false,
   nearBaselineCount = DEFAULT_NEAR_BASELINE_COUNT,
   minimumSample,
+  minimumTopKRecall = 0.6,
+  rescueLimit = 0,
+  scenario,
 }) {
   const objectiveSet = normalizeObjectiveSet(objectiveInput);
   if (objectiveSet.objectives.length === 0) {
@@ -1216,6 +1512,11 @@ async function evaluateSelectiveCandidates({
   const wallStarted = performance.now();
   const xml = fs.readFileSync(buildPath, "utf8");
   const buildHash = sha256(xml);
+  const normalizedScenario = normalizeScenario(scenario);
+  const scenarioXml = applyXmlScenario(xml, {
+    inputs: normalizedScenario,
+    placeholders: normalizedScenario,
+  });
   const runtime = runtimeMeta || resolveRuntime(currentRuntime);
   const makeClient = clientFactory || ((meta) => new PobClient(meta));
   const calibrationMode = shortlist.some((entry) =>
@@ -1251,20 +1552,36 @@ async function evaluateSelectiveCandidates({
   let client = null;
   let baseline = null;
   let baselineStats = null;
+  let scenarioReport = null;
   let startupMs = 0;
   let startupCount = 0;
   async function startClient() {
     const started = performance.now();
     client = makeClient(runtime);
-    await client.ready();
-    await client.loadXml(xml, "PoE2 Forge Selective Baseline");
-    const snapshot = await observableSnapshot(client);
-    startupMs += performance.now() - started;
-    startupCount += 1;
-    if (!baseline) {
-      baseline = snapshot;
-    } else if (stableStringify(snapshot) !== stableStringify(baseline)) {
-      throw new Error("Baseline changed while restarting the PoB client");
+    try {
+      await client.ready();
+      await client.loadXml(scenarioXml, "PoE2 Forge Selective Baseline");
+      const appliedScenario = await applyAndVerifyScenario(
+        client,
+        scenarioXml,
+        normalizedScenario,
+      );
+      const snapshot = await observableSnapshot(client, {
+        integrityFields: ["Life", "TotalEHP"],
+      });
+      startupMs += performance.now() - started;
+      startupCount += 1;
+      if (!baseline) {
+        baseline = snapshot;
+        scenarioReport = appliedScenario;
+      } else if (stableStringify(snapshot) !== stableStringify(baseline)) {
+        throw new Error("Baseline changed while restarting the PoB client");
+      } else if (appliedScenario.scenarioHash !== scenarioReport.scenarioHash) {
+        throw new Error("Scenario changed while restarting the PoB client");
+      }
+    } catch (error) {
+      await closeClient();
+      throw error;
     }
   }
   async function closeClient() {
@@ -1290,7 +1607,7 @@ async function evaluateSelectiveCandidates({
         baselineMetricReport.missingRequired.join(", "),
     );
   }
-  const jobs = selection.selected.map((entry) => {
+  function makeJob(entry, evaluationPhase = "initial") {
     const scoring = {
       scorerVersion: entry.scorerVersion ?? null,
       buildProfileSchemaVersion: entry.buildProfileSchemaVersion ?? null,
@@ -1307,6 +1624,7 @@ async function evaluateSelectiveCandidates({
       objectiveSet,
       enemyProfile,
       treeData,
+      scenario: scenarioReport,
     });
     return {
       canonicalKey: entry.canonicalKey,
@@ -1314,19 +1632,30 @@ async function evaluateSelectiveCandidates({
       entry,
       scoring,
       selectionReasons: entry.selectionReasons,
+      evaluationPhase,
       cheapRankScore: entry.rankScore,
       cacheIdentity,
       jobId: sha256(stableStringify(cacheIdentity)),
     };
-  });
+  }
+  let jobs = selection.selected.map((entry) => makeJob(entry, "initial"));
+  const initialJobs = [...jobs];
+  const normalizedRescueLimit = Math.max(
+    0,
+    Math.floor(Number(rescueLimit) || 0),
+  );
   const runKey = sha256(stableStringify({
     version: SELECTIVE_EVALUATION_VERSION,
     buildHash,
     objectiveSet,
     enemyProfile,
     treeData,
+    scenario: scenarioReport,
     runtime: runtimeIdentity(runtime),
-    jobs: jobs.map((job) => job.jobId),
+    initialJobs: jobs.map((job) => job.jobId),
+    shortlist: shortlist.map((entry) => entry.canonicalKey).sort(),
+    rescueLimit: normalizedRescueLimit,
+    minimumTopKRecall,
   }));
   const cache = readStore(cachePath, CACHE_SCHEMA_VERSION);
   let checkpoint = {
@@ -1355,13 +1684,17 @@ async function evaluateSelectiveCandidates({
   let cacheHits = 0;
   let resumed = 0;
   let pobCalls = 0;
+  let initialPobCalls = 0;
+  let rescuePobCalls = 0;
   let runtimeLimited = false;
   let evaluationLimited = false;
   const evaluationBudget = Math.max(0, Math.floor(Number(evaluationLimit) || 0));
+  const totalEvaluationBudget = evaluationBudget + normalizedRescueLimit;
   const perBatch = Math.max(1, Math.floor(Number(batchSize) || 1));
-  for (let offset = 0; offset < jobs.length; offset += perBatch) {
+  async function evaluateJobs(phaseJobs, evaluationPhase) {
+  for (let offset = 0; offset < phaseJobs.length; offset += perBatch) {
     const batchStarted = performance.now();
-    for (const job of jobs.slice(offset, offset + perBatch)) {
+    for (const job of phaseJobs.slice(offset, offset + perBatch)) {
       if (
         Number.isFinite(Number(runtimeLimitMs)) &&
         performance.now() - wallStarted >= Number(runtimeLimitMs)
@@ -1381,12 +1714,13 @@ async function evaluateSelectiveCandidates({
         cacheHits += 1;
         continue;
       }
-      if (pobCalls >= evaluationBudget) {
+      if (pobCalls >= totalEvaluationBudget) {
         evaluationLimited = true;
         break;
       }
       const candidateSummary = {
         calibrationKind: job.entry.calibrationKind || "candidate",
+        calibrationTier: entryCalibrationTier(job.entry),
         cheapPruned: Boolean(job.entry.cheapPruned),
         cheapRank: job.entry.cheapRank ?? null,
         structuralBucket:
@@ -1412,6 +1746,7 @@ async function evaluateSelectiveCandidates({
           Math.abs(Number(job.entry.components?.uncertainty || 0)),
         scorerVersion: job.scoring.scorerVersion,
         profileVersion: job.scoring.profileVersion,
+        nodeExplanations: job.entry.nodeExplanations || [],
       };
       if (candidateSummary.calibrationKind === "baseline") {
         const result = {
@@ -1419,6 +1754,7 @@ async function evaluateSelectiveCandidates({
           cacheKey: job.jobId,
           canonicalKey: job.canonicalKey,
           selectionReasons: job.selectionReasons,
+          evaluationPhase,
           accepted: true,
           cached: false,
           status: "success",
@@ -1442,11 +1778,14 @@ async function evaluateSelectiveCandidates({
       }
       if (!client) await startClient();
       pobCalls += 1;
+      if (evaluationPhase === "rescue") rescuePobCalls += 1;
+      else initialPobCalls += 1;
       const result = {
         jobId: job.jobId,
         cacheKey: job.jobId,
         canonicalKey: job.canonicalKey,
         selectionReasons: job.selectionReasons,
+        evaluationPhase,
         accepted: false,
         cached: false,
         status: "failure",
@@ -1462,8 +1801,15 @@ async function evaluateSelectiveCandidates({
       };
       let clientUsable = true;
       try {
-        await client.loadXml(xml, "PoE2 Forge Candidate Baseline");
-        const reloadedBaseline = await observableSnapshot(client);
+        await client.loadXml(scenarioXml, "PoE2 Forge Candidate Baseline");
+        const reloadedScenario = await applyAndVerifyScenario(
+          client,
+          scenarioXml,
+          normalizedScenario,
+        );
+        const reloadedBaseline = await observableSnapshot(client, {
+          integrityFields: ["Life", "TotalEHP"],
+        });
         if (stableStringify(reloadedBaseline) !== stableStringify(baseline)) {
           result.status = "drift";
           result.drift = [{
@@ -1471,20 +1817,34 @@ async function evaluateSelectiveCandidates({
             before: baseline,
             after: reloadedBaseline,
           }];
+        } else if (reloadedScenario.scenarioHash !== scenarioReport.scenarioHash) {
+          result.status = "drift";
+          result.drift = [{
+            field: "scenario",
+            before: scenarioReport,
+            after: reloadedScenario,
+          }];
         } else {
-          await client.call("set_tree", treeParams(job.candidate));
-          const accepted = await observableSnapshot(client);
-          result.parity = parity(job.candidate, accepted.tree);
+          const nodeDelta = passiveDelta(baseline.tree, job.candidate);
+          const measured = await extractObjectives({
+            client,
+            skills: baseline.skills,
+            objectiveSet,
+            entry: job.entry,
+            nodeDelta,
+          });
+          const accepted = await observableSnapshot(client, {
+            integrityFields: ["Life", "TotalEHP"],
+          });
+          result.parity = {
+            exact: true,
+            nonMutating: true,
+            delta: nodeDelta,
+          };
           result.drift = drift(baseline, accepted);
-          if (!result.parity.exact || result.drift.length) {
+          if (result.drift.length) {
             result.status = "drift";
           } else {
-            const measured = await extractObjectives({
-              client,
-              skills: baseline.skills,
-              objectiveSet,
-              entry: job.entry,
-            });
             result.metrics = measured.metrics;
             result.objectives = measured.metrics;
             result.objectiveSources = measured.objectiveSources;
@@ -1507,8 +1867,15 @@ async function evaluateSelectiveCandidates({
         result.completedOffsetMs = performance.now() - wallStarted;
         if (clientUsable && client) {
           try {
-            await client.loadXml(xml, "PoE2 Forge Candidate Restore");
-            const restored = await observableSnapshot(client);
+            await client.loadXml(scenarioXml, "PoE2 Forge Candidate Restore");
+            await applyAndVerifyScenario(
+              client,
+              scenarioXml,
+              normalizedScenario,
+            );
+            const restored = await observableSnapshot(client, {
+              integrityFields: ["Life", "TotalEHP"],
+            });
             if (stableStringify(restored) !== stableStringify(baseline)) {
               result.accepted = false;
               result.status = "drift";
@@ -1536,12 +1903,70 @@ async function evaluateSelectiveCandidates({
     writeJsonAtomic(checkpointPath, checkpoint);
     if (runtimeLimited || evaluationLimited) break;
   }
+  }
+  await evaluateJobs(initialJobs, "initial");
+  const diagnosticMinimumSample = Math.max(
+    2,
+    Number(minimumSample || objectiveSet.minimumSample),
+  );
+  const initialEvidenceResults = results.map((entry) =>
+    entry.status === "success"
+      ? objectiveEvidence(
+          entry,
+          baselineMetricReport.metrics,
+          objectiveSet,
+        )
+      : entry);
+  const initialDiagnostics = scorerDiagnostics({
+    shortlist,
+    results: initialEvidenceResults,
+    baselineObjectives: baselineMetricReport.metrics,
+    objectiveSet,
+    cheapParetoKeys: selection.cheapParetoKeys,
+    pobCalls: initialPobCalls,
+    minimumSample: diagnosticMinimumSample,
+  });
+  const initialGate = scorerQualityGate(initialDiagnostics, {
+    minimumSample: diagnosticMinimumSample,
+    minimumTopKRecall,
+  });
+  let rescueSelection = {
+    version: SELECTIVE_EVALUATION_VERSION,
+    limit: 0,
+    selected: [],
+  };
+  if (
+    calibrationMode &&
+    normalizedRescueLimit > 0 &&
+    !initialGate.passed &&
+    !runtimeLimited
+  ) {
+    rescueSelection = selectRescueCandidates({
+      shortlist,
+      excludedKeys: selection.selected.map((entry) => entry.canonicalKey),
+      limit: normalizedRescueLimit,
+      seed,
+    });
+    const rescueJobs = rescueSelection.selected.map((entry) =>
+      makeJob(entry, "rescue"));
+    jobs = [...jobs, ...rescueJobs];
+    checkpoint.jobs.push(...rescueJobs.map((job) => ({
+      jobId: job.jobId,
+      canonicalKey: job.canonicalKey,
+      selectionReasons: job.selectionReasons,
+      evaluationPhase: "rescue",
+    })));
+    await evaluateJobs(rescueJobs, "rescue");
+  }
   let finalBaselineRestored = false;
   let finalBaselineError = null;
   try {
     if (!client) await startClient();
-    await client.loadXml(xml, "PoE2 Forge Final Baseline Restore");
-    const finalBaseline = await observableSnapshot(client);
+    await client.loadXml(scenarioXml, "PoE2 Forge Final Baseline Restore");
+    await applyAndVerifyScenario(client, scenarioXml, normalizedScenario);
+    const finalBaseline = await observableSnapshot(client, {
+      integrityFields: ["Life", "TotalEHP"],
+    });
     finalBaselineRestored =
       stableStringify(finalBaseline) === stableStringify(baseline);
     if (!finalBaselineRestored) finalBaselineError = "Final baseline mismatch";
@@ -1568,11 +1993,25 @@ async function evaluateSelectiveCandidates({
     cheapParetoKeys: selection.cheapParetoKeys,
     pobCalls,
     minimumSample:
-      Math.max(
-        2,
-        Number(minimumSample || objectiveSet.minimumSample),
-      ),
+      diagnosticMinimumSample,
   });
+  const finalGate = scorerQualityGate(diagnostics, {
+    minimumSample: diagnosticMinimumSample,
+    minimumTopKRecall,
+  });
+  const adaptiveRescue = {
+    enabled: normalizedRescueLimit > 0,
+    triggered: rescueSelection.selected.length > 0,
+    initialGate,
+    finalGate,
+    rescueLimit: normalizedRescueLimit,
+    selected: rescueSelection.selected.length,
+    confidence: finalGate.passed ? "high" : "low",
+    exhausted:
+      rescueSelection.selected.length > 0 &&
+      rescueSelection.selected.length >= normalizedRescueLimit &&
+      !finalGate.passed,
+  };
   const representatives = representativeRealPareto(
     evidenceResults,
     objectiveSet,
@@ -1584,28 +2023,59 @@ async function evaluateSelectiveCandidates({
     objectiveExtractorVersion: OBJECTIVE_EXTRACTOR_VERSION,
     objectiveSet,
     buildHash,
+    scenario: scenarioReport,
     runtime: runtimeIdentity(runtime),
     selection: {
       limit: selection.limit,
       mix: selection.mix,
       allocation: selection.allocation,
       mandatory: selection.mandatory || null,
-      selected: selection.selected.map((entry) => ({
+      initialSelected: selection.selected.map((entry) => ({
         canonicalKey: entry.canonicalKey,
         selectionReasons: entry.selectionReasons,
         selectionOrder: entry.selectionOrder,
+        evaluationPhase: "initial",
         calibrationKind: entry.calibrationKind || "candidate",
+        calibrationTier: entryCalibrationTier(entry),
         cheapPruned: Boolean(entry.cheapPruned),
         structuralBucket: entry.structuralBucket || structuralBucket(entry),
       })),
+      rescueSelected: rescueSelection.selected.map((entry) => ({
+        canonicalKey: entry.canonicalKey,
+        selectionReasons: entry.selectionReasons,
+        selectionOrder: entry.selectionOrder,
+        evaluationPhase: "rescue",
+        calibrationKind: entry.calibrationKind || "candidate",
+        calibrationTier: entryCalibrationTier(entry),
+        cheapPruned: Boolean(entry.cheapPruned),
+        structuralBucket: entry.structuralBucket || structuralBucket(entry),
+      })),
+      selected: [...selection.selected, ...rescueSelection.selected].map(
+        (entry) => ({
+          canonicalKey: entry.canonicalKey,
+          selectionReasons: entry.selectionReasons,
+          selectionOrder: entry.selectionOrder,
+          evaluationPhase: entry.evaluationPhase || "initial",
+          calibrationKind: entry.calibrationKind || "candidate",
+          calibrationTier: entryCalibrationTier(entry),
+          cheapPruned: Boolean(entry.cheapPruned),
+          structuralBucket: entry.structuralBucket || structuralBucket(entry),
+        }),
+      ),
     },
     budget: {
       evaluationLimit: evaluationBudget,
+      rescueLimit: normalizedRescueLimit,
+      hardCap: totalEvaluationBudget,
       runtimeLimitMs: Number.isFinite(Number(runtimeLimitMs))
         ? Number(runtimeLimitMs)
         : null,
       pobCalls,
-      usedFraction: evaluationBudget > 0 ? pobCalls / evaluationBudget : 0,
+      initialPobCalls,
+      rescuePobCalls,
+      usedFraction: totalEvaluationBudget > 0
+        ? pobCalls / totalEvaluationBudget
+        : 0,
       evaluationLimited,
       runtimeLimited,
     },
@@ -1643,18 +2113,25 @@ async function evaluateSelectiveCandidates({
       representatives,
     },
     diagnostics,
+    adaptiveRescue,
     userReport: {
       baseline: baselineMetricReport.metrics,
       realImprovements: diagnostics.realImprovements,
       realRegressions: diagnostics.realRegressions,
       realTradeoffs: diagnostics.realTradeoffs,
-      noImprovementFound: diagnostics.realImprovements === 0,
+      noImprovementFound:
+        diagnostics.realImprovements === 0 && finalGate.passed,
+      confidence: adaptiveRescue.confidence,
+      adaptiveRescue,
       limitationDiagnosis: diagnostics.limitationDiagnosis,
       warnings: diagnostics.warnings,
       representatives: representatives.map((entry) => ({
         labels: entry.representativeLabels,
         whyInteresting: entry.whyInteresting,
         canonicalKey: entry.canonicalKey,
+        performanceComparison: entry.performanceComparison,
+        performanceUtility: entry.performanceUtility,
+        costs: entry.costs,
         baselineComparison: entry.baselineComparison,
         objectiveDeltas: entry.objectiveDeltas,
         addedPackageIds: entry.candidateSummary?.addedPackageIds || [],
@@ -1687,12 +2164,16 @@ module.exports = {
   extractObjectives,
   normalizeObjectiveSet,
   normalizeSelectionMix,
+  objectiveEvidence,
   parseObjectiveSpec,
   realDominates,
   realParetoArchive,
   representativeRealPareto,
   scorerDiagnostics,
+  scorerQualityGate,
   selectCalibrationCandidates,
   selectPobCandidates,
+  selectRescueCandidates,
+  structuralBucket,
   wilsonInterval,
 };

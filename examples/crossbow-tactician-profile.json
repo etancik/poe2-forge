@@ -1,7 +1,14 @@
 {
-  "buildProfileSchemaVersion": 2,
-  "profileVersion": 1,
+  "buildProfileSchemaVersion": 3,
+  "profileVersion": 2,
   "id": "crossbow-tactician-local-ranking",
+  "scenario": {
+    "enemyLevel": 42,
+    "enemyEvasion": 369,
+    "enemyArmour": 479,
+    "resistancePenalty": -20,
+    "enemyDistance": 20
+  },
   "archetypeTags": [
     "role.totem",
     "role.defensive"
@@ -17,7 +24,15 @@
     "role.recovery"
   ],
   "forbiddenTags": [
-    "mechanic.spell",
-    "mechanic.minion"
-  ]
+  ],
+  "mechanicPreferences": {
+    "grenade": "inactive",
+    "minion": "inactive",
+    "spell": "inactive",
+    "projectile": "required",
+    "crossbow": "required",
+    "totem": "preferred",
+    "self-curse": "planned"
+  },
+  "experimentalUnknown": false
 }

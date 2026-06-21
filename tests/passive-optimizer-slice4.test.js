@@ -331,10 +331,7 @@ test("persistent PoB evaluation returns repeated metric equality", async () => {
       };
     }
     async call(action, params) {
-      if (action === "set_tree") {
-        state.tree = { ...params };
-        return {};
-      }
+      if (action === "set_tree") throw new Error("set_tree must not be called");
       if (action === "get_tree") return { tree: state.tree };
       if (action === "get_build_info") {
         return { info: {
@@ -350,6 +347,9 @@ test("persistent PoB evaluation returns repeated metric equality", async () => {
         return { skills: { mainSocketGroup: 1, groups: [] } };
       }
       if (action === "get_stats") {
+        return { stats: { TotalDPS: 123, Life: 456 } };
+      }
+      if (action === "calc_with_stats") {
         return { stats: { TotalDPS: 123, Life: 456 } };
       }
       throw new Error(action);

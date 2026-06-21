@@ -7,6 +7,10 @@ const {
   sortedUniqueNumbers,
   stableStringify,
 } = require("./stable");
+const {
+  applyAndVerifyScenario,
+  normalizeScenario,
+} = require("./scenario");
 
 function masteryEffectsForPob(candidate) {
   return Object.entries(candidate.masterySelections || {}).map(
@@ -42,12 +46,25 @@ function compactSkills(skills) {
   };
 }
 
-async function observableSnapshot(client) {
+async function observableSnapshot(client, options = {}) {
   const info = await client.call("get_build_info");
   const tree = await client.call("get_tree");
   const config = await client.call("get_config");
   const items = await client.call("get_items");
   const skills = await client.call("get_skills");
+  const integrityFields = [...new Set(
+    (options.integrityFields || []).map(String).filter(Boolean),
+  )].sort();
+  const rawIntegrityStats = integrityFields.length
+    ? (await client.call("get_stats", { fields: integrityFields })).stats
+    : undefined;
+  const integrityStats = rawIntegrityStats
+    ? Object.fromEntries(
+        integrityFields
+          .filter((field) => Object.hasOwn(rawIntegrityStats, field))
+          .map((field) => [field, rawIntegrityStats[field]]),
+      )
+    : undefined;
   return {
     info: {
       className: info.info.className,
@@ -66,11 +83,12 @@ async function observableSnapshot(client) {
     config: config.config,
     items: compactItems(items.items),
     skills: compactSkills(skills.skills),
+    ...(integrityStats ? { integrityStats } : {}),
   };
 }
 
 function drift(before, after) {
-  const fields = ["info", "config", "items", "skills"];
+  const fields = ["info", "config", "items", "skills", "integrityStats"];
   const changes = [];
   for (const field of fields) {
     if (stableStringify(before[field]) !== stableStringify(after[field])) {
@@ -96,6 +114,15 @@ function drift(before, after) {
     }
   }
   return changes;
+}
+
+function passiveDelta(baselineTree, candidate) {
+  const baseline = new Set(baselineTree.nodes || []);
+  const requested = new Set(candidate.allocatedNodeIds || []);
+  return {
+    addNodes: [...requested].filter((id) => !baseline.has(id)).sort((a, b) => a - b),
+    removeNodes: [...baseline].filter((id) => !requested.has(id)).sort((a, b) => a - b),
+  };
 }
 
 function parity(candidate, acceptedTree) {
@@ -218,6 +245,7 @@ async function evaluateCandidates({
   clientFactory,
   runtimeMeta,
   runtimeLimitMs,
+  scenario,
 }) {
   const limit = Math.max(0, Math.floor(Number(count) || 0));
   const selected = candidates.slice(0, limit);
@@ -231,6 +259,7 @@ async function evaluateCandidates({
   const results = [];
   const startedAt = Date.now();
   let runtimeLimited = false;
+  let scenarioReport = null;
   try {
     await client.ready();
     for (const candidate of selected) {
@@ -241,47 +270,63 @@ async function evaluateCandidates({
         runtimeLimited = true;
         break;
       }
+      await client.loadXml(xml, "Passive Search Baseline");
+      scenarioReport = await applyAndVerifyScenario(
+        client,
+        xml,
+        normalizeScenario(scenario),
+      );
+      const baseline = await observableSnapshot(client, {
+        integrityFields: ["Life", "TotalEHP"],
+      });
+      const delta = passiveDelta(baseline.tree, candidate);
       const cacheKey = sha256(stableStringify({
         candidate,
+        delta,
         buildHash,
         config: candidate.configRelevantState,
+        scenarioHash: scenarioReport.scenarioHash,
         runtime: runtimeIdentity(runtime),
         metrics: fields,
+        baseline: {
+          info: baseline.info,
+          items: baseline.items,
+          skills: baseline.skills,
+          integrityStats: baseline.integrityStats,
+        },
       }));
       if (cache[cacheKey]) {
         results.push({ ...cache[cacheKey], cached: true });
         continue;
       }
-      await client.loadXml(xml, "Passive Search Baseline");
-      const baseline = await observableSnapshot(client);
-      let setterError = null;
-      try {
-        await client.call("set_tree", treeParams(candidate));
-      } catch (error) {
-        setterError = error.message;
-      }
-      const accepted = setterError ? null : await observableSnapshot(client);
-      const parityReport = accepted
-        ? parity(candidate, accepted.tree)
-        : { exact: false, expected: null, actual: null };
-      const driftReport = accepted ? drift(baseline, accepted) : [];
-      const exactAccepted =
-        !setterError && parityReport.exact && driftReport.length === 0;
-      let stats = null;
       let metricError = null;
-      if (exactAccepted && fields.length > 0) {
-        try {
-          stats = (await client.call("get_stats", { fields })).stats;
-        } catch (error) {
-          metricError = error.message;
-        }
+      let stats = null;
+      try {
+        stats = fields.length
+          ? (await client.call("calc_with_stats", {
+              ...delta,
+              fields,
+              useFullDPS: false,
+            })).stats
+          : {};
+      } catch (error) {
+        metricError = error.message;
       }
+      const accepted = await observableSnapshot(client, {
+        integrityFields: ["Life", "TotalEHP"],
+      });
+      const driftReport = drift(baseline, accepted);
+      const exactAccepted = !metricError && driftReport.length === 0;
       const result = {
         cacheKey,
         canonicalKey: candidate.canonicalKey,
         accepted: exactAccepted,
-        setterError,
-        parity: parityReport,
+        setterError: null,
+        parity: {
+          exact: true,
+          nonMutating: true,
+          delta,
+        },
         drift: driftReport,
         metrics: stats,
         metricError,
@@ -299,6 +344,7 @@ async function evaluateCandidates({
   return {
     runtime: runtimeIdentity(runtime),
     buildHash,
+    scenario: scenarioReport,
     requestedMetrics: fields,
     checked: results.length,
     accepted: results.filter((entry) => entry.accepted).length,
@@ -320,4 +366,5 @@ module.exports = {
   runtimeIdentity,
   smokeCandidates,
   treeParams,
+  passiveDelta,
 };

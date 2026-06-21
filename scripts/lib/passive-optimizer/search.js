@@ -9,8 +9,9 @@ const {
 } = require("./scorer");
 const { sha256, sortedUniqueNumbers, stableStringify } = require("./stable");
 const { validateCandidate } = require("./validator");
+const { explainAddedNodes } = require("./mechanic-relevance");
 
-const SEARCH_VERSION = 1;
+const SEARCH_VERSION = 2;
 const DEFAULT_EPSILON = {
   offense: 0.15,
   defense: 0.15,
@@ -47,6 +48,13 @@ function clampInteger(value, fallback, minimum, maximum) {
 
 function deterministicRank(seed, value) {
   return sha256(`${Number(seed) || 0}:${String(value)}`);
+}
+
+function calibrationTier(changedNodeCount) {
+  const changed = Math.max(0, Number(changedNodeCount) || 0);
+  if (changed === 0) return "baseline";
+  if (changed <= 2) return "adjacent";
+  return "ordinary";
 }
 
 function roleFamily(pkg) {
@@ -266,7 +274,11 @@ function makeMoves(graph, candidate, packages, options = {}) {
   return moves
     .filter((move) => {
       const cost = deltaCost(candidate, move.delta).marginal.changed;
-      return cost <= Number(options.maxChanges ?? 8);
+      const removals = move.delta.removeNodeIds.length;
+      return (
+        cost <= Number(options.maxChanges ?? 8) &&
+        removals <= Number(options.maxRemovals ?? Infinity)
+      );
     })
     .sort(
       (left, right) =>
@@ -456,6 +468,20 @@ function scoreSearchCandidate({
   const delta = candidateDelta(incumbent, candidate);
   const costs = deltaCost(incumbent, delta);
   const normalizedProfile = normalizeBuildProfile(profile);
+  const nodeExplanations = explainAddedNodes(
+    graph,
+    incumbent,
+    candidate,
+    normalizedProfile,
+  );
+  const unexplained = nodeExplanations.filter((entry) => !entry.accepted);
+  if (
+    Object.keys(normalizedProfile.mechanicPreferences || {}).length > 0 &&
+    unexplained.length
+  ) {
+    status = "invalid";
+    for (const entry of unexplained) reasonCodes.add(entry.reason);
+  }
   if (
     normalizedProfile.hardConstraints.maxMarginalPoints !== null &&
     costs.marginal.add >
@@ -507,6 +533,7 @@ function scoreSearchCandidate({
     requiredPoBChecks: [...requiredPoBChecks].sort(),
     costs,
     delta,
+    nodeExplanations,
   };
 }
 
@@ -657,6 +684,19 @@ function runPackageSearch(input) {
     seed: Number(input.seed) || 0,
     epsilon: { ...DEFAULT_EPSILON, ...(input.epsilon || {}) },
     diversityBucketCap: clampInteger(input.diversityBucketCap, 2, 1, 20),
+    maxRemovals: clampInteger(
+      input.maxRemovals,
+      clampInteger(input.maxChanges, 8, 0, 100),
+      0,
+      100,
+    ),
+    minAdded: clampInteger(input.minAdded, 0, 0, 100),
+    maxAdded: clampInteger(
+      input.maxAdded,
+      clampInteger(input.maxChanges, 8, 0, 100),
+      0,
+      100,
+    ),
   };
   const baselineSnapshot = stableStringify(incumbent);
   const relevant = selectRelevantPackages({
@@ -752,7 +792,11 @@ function runPackageSearch(input) {
         const rawDelta = candidateDelta(incumbent, raw);
         const rawChanges =
           rawDelta.addNodeIds.length + rawDelta.removeNodeIds.length;
-        if (rawChanges > options.maxChanges) {
+        if (
+          rawChanges > options.maxChanges ||
+          rawDelta.removeNodeIds.length > options.maxRemovals ||
+          rawDelta.addNodeIds.length > options.maxAdded
+        ) {
           counts.overBudget += 1;
           continue;
         }
@@ -821,8 +865,15 @@ function runPackageSearch(input) {
     if (beam.length === 0) break;
   }
 
-  const paretoArchive = epsilonParetoArchive(usable, options.epsilon);
-  const explorationBucket = usable
+  const eligible = usable.filter((entry) =>
+    entry.changedNodeCount === 0 ||
+    (
+      entry.delta.addNodeIds.length >= options.minAdded &&
+      entry.delta.addNodeIds.length <= options.maxAdded &&
+      entry.delta.removeNodeIds.length <= options.maxRemovals
+    ));
+  const paretoArchive = epsilonParetoArchive(eligible, options.epsilon);
+  const explorationBucket = eligible
     .filter(
       (entry) =>
         entry.status === "needsPoB" &&
@@ -859,7 +910,7 @@ function runPackageSearch(input) {
     representativeLabels: labels.get(entry.canonicalKey) || [],
   }));
   const archiveKeys = new Set(archive.map((entry) => entry.canonicalKey));
-  const calibrationPool = [...usable]
+  const calibrationPool = [...eligible]
     .sort(
       (left, right) =>
         right.rankScore - left.rankScore ||
@@ -869,10 +920,11 @@ function runPackageSearch(input) {
       ...entry,
       cheapRank: cheapRank + 1,
       cheapPruned: !archiveKeys.has(entry.canonicalKey),
+      calibrationTier: calibrationTier(entry.changedNodeCount),
       calibrationKind:
         entry.changedNodeCount === 0
           ? "baseline"
-          : entry.changedNodeCount <= Math.min(4, options.maxChanges)
+          : calibrationTier(entry.changedNodeCount) === "adjacent"
             ? "near-baseline"
             : "candidate",
     }));
@@ -898,6 +950,7 @@ module.exports = {
   SEARCH_VERSION,
   applySearchDelta,
   applyDiversityCaps,
+  calibrationTier,
   changedNodes,
   diversityBucket,
   epsilonDominates,

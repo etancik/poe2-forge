@@ -11,7 +11,7 @@
   "scripts": {
     "audit": "node scripts/publication-scan.js",
     "help": "node scripts/passive-optimizer.js --help",
-    "test": "node --test tests/passive-optimizer.test.js tests/passive-optimizer-slice2.test.js tests/passive-optimizer-slice3.test.js tests/passive-optimizer-slice4.test.js tests/passive-optimizer-slice5.test.js tests/passive-optimizer-slice6.test.js tests/portable-config.test.js",
+    "test": "node --test tests/passive-optimizer.test.js tests/passive-optimizer-slice2.test.js tests/passive-optimizer-slice3.test.js tests/passive-optimizer-slice4.test.js tests/passive-optimizer-slice5.test.js tests/passive-optimizer-slice6.test.js tests/passive-optimizer-slice7.test.js tests/passive-optimizer-slice8.test.js tests/item-completion.test.js tests/portable-config.test.js",
     "test:integration": "node --test tests/passive-optimizer.integration.test.js"
   },
   "engines": {
