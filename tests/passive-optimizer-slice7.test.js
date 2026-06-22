@@ -10,6 +10,7 @@ const { withCandidateKey } = require(
 );
 const {
   cacheKeyFor,
+  declaredPassiveDelta,
   evaluateSelectiveCandidates,
   normalizeObjectiveSet,
 } = require(
@@ -238,6 +239,50 @@ test("exact evaluation uses scalar passive deltas and preserves baseline state",
     xml.includes('<Input number="-20" name="resistancePenalty"/>')));
   assert.deepEqual(tree.nodes, [1]);
   assert.equal(result.baseline.finalBaselineRestored, true);
+
+  const stale = {
+    ...changed,
+    delta: { addNodeIds: [99], removeNodeIds: [] },
+  };
+  const callsBeforeStaleEvaluation = calls.length;
+  const staleResult = await evaluateSelectiveCandidates({
+    buildPath,
+    shortlist: [baseline, stale],
+    objectiveSet: normalizeObjectiveSet({
+      objectives: [
+        { name: "damage", field: "TotalDPS", skill: "Crossbow Shot" },
+        { name: "life", field: "Life" },
+      ],
+    }),
+    enemyProfile: {},
+    treeData: { hash: "tree", treeVersion: "test" },
+    scenario: SCENARIO,
+    runtimeMeta: {
+      version: "test",
+      apiVersion: 2,
+      apiPatchVersion: 7,
+      runtime: "fake",
+    },
+    clientFactory,
+    evaluationLimit: 2,
+    selectionMix: { predictedBest: 1 },
+  });
+  const rejectedStale = staleResult.results.find(
+    (entry) => entry.canonicalKey === stale.canonicalKey,
+  );
+  assert.equal(rejectedStale.status, "drift");
+  assert.equal(rejectedStale.accepted, false);
+  assert.deepEqual(rejectedStale.drift, [{
+    field: "candidateDelta",
+    before: { addNodes: [99], removeNodes: [] },
+    after: { addNodes: [2], removeNodes: [] },
+  }]);
+  assert.equal(
+    calls.slice(callsBeforeStaleEvaluation).some(
+      (call) => call.action === "calc_with_stats",
+    ),
+    false,
+  );
   fs.rmSync(root, { recursive: true, force: true });
 });
 
@@ -321,6 +366,27 @@ test("scenario changes invalidate exact cache identity", () => {
         effective: { ...SCENARIO, enemyLevel: 43 },
         scenarioHash: "two",
       },
+    }),
+  );
+});
+
+test("declared exact delta is canonical and detects stale candidate pools", () => {
+  assert.deepEqual(declaredPassiveDelta({
+    delta: {
+      addNodeIds: [4, 2],
+      removeNodeIds: [9, 7],
+    },
+  }), {
+    addNodes: [2, 4],
+    removeNodes: [7, 9],
+  });
+  assert.notEqual(
+    JSON.stringify(declaredPassiveDelta({
+      delta: { addNodeIds: [], removeNodeIds: [25807] },
+    })),
+    JSON.stringify({
+      addNodes: [54417],
+      removeNodes: [6626, 8092, 25807],
     }),
   );
 });

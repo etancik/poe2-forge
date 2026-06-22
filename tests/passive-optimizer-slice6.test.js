@@ -522,6 +522,23 @@ test("quality gate requests rescue for a weak sample and remains explicit", () =
     minimumTopKRecall: 0.6,
   });
   assert.equal(passed.passed, true);
+
+  const falseNegative = scorerQualityGate({
+    evaluatedPairs: 10,
+    topK: 5,
+    topKRecall: 0.8,
+    cheapVsPobSpearmanConfidenceInterval: { low: 0.2, high: 0.8 },
+    falseNegativePruning: {
+      count: 1,
+      totalCheapPruned: 10,
+      confidence: "moderate",
+    },
+  }, {
+    minimumSample: 8,
+    minimumTopKRecall: 0.6,
+  });
+  assert.equal(falseNegative.passed, false);
+  assert.deepEqual(falseNegative.reasons, ["false_negatives"]);
 });
 
 test("objective extraction selects configured skills and derives costs", async () => {

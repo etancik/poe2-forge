@@ -765,6 +765,17 @@ function candidateObjectiveValue(entry, objective) {
   return finiteNumber(values[objective.field]);
 }
 
+function declaredPassiveDelta(entry) {
+  return {
+    addNodes: [...(entry?.delta?.addNodeIds || [])]
+      .map(Number)
+      .sort((left, right) => left - right),
+    removeNodes: [...(entry?.delta?.removeNodeIds || [])]
+      .map(Number)
+      .sort((left, right) => left - right),
+  };
+}
+
 function objectiveSkillNames(skill) {
   if (!skill) return [];
   if (typeof skill === "string") return [skill];
@@ -1385,7 +1396,11 @@ function scorerQualityGate(
   const conservativeFailure = reasons.some((reason) =>
     ["rank_correlation", "false_negatives"].includes(reason));
   return {
-    passed: sampleMet && coverageMet && (recallPassed || !conservativeFailure),
+    passed:
+      sampleMet &&
+      coverageMet &&
+      recallPassed &&
+      !conservativeFailure,
     minimumSample,
     minimumTopKRecall,
     reasons,
@@ -1535,9 +1550,10 @@ async function evaluateSelectiveCandidates({
         mix: selectionMix,
         seed,
       });
-  const baselineEntry = shortlist.find((entry) =>
+  const explicitBaselineEntry = shortlist.find((entry) =>
     entry.calibrationKind === "baseline" ||
-    Number(entry.changedNodeCount || 0) === 0) || {
+    Number(entry.changedNodeCount || 0) === 0);
+  const baselineEntry = explicitBaselineEntry || {
     ...shortlist[0],
     calibrationKind: "baseline-reference",
     changedNodeCount: 0,
@@ -1593,6 +1609,21 @@ async function evaluateSelectiveCandidates({
     }
   }
   await startClient();
+  const baselineCandidateDelta = passiveDelta(baseline.tree, baselineCandidate);
+  if (
+    explicitBaselineEntry &&
+    (
+      baselineCandidateDelta.addNodes.length ||
+      baselineCandidateDelta.removeNodes.length
+    )
+  ) {
+    await closeClient();
+    throw new Error(
+      "Selective-evaluation shortlist baseline does not match the loaded build: " +
+        `add [${baselineCandidateDelta.addNodes.join(",")}], ` +
+        `remove [${baselineCandidateDelta.removeNodes.join(",")}]`,
+    );
+  }
   const baselineMetricReport = await extractObjectives({
     client,
     skills: baseline.skills,
@@ -1826,37 +1857,50 @@ async function evaluateSelectiveCandidates({
           }];
         } else {
           const nodeDelta = passiveDelta(baseline.tree, job.candidate);
-          const measured = await extractObjectives({
-            client,
-            skills: baseline.skills,
-            objectiveSet,
-            entry: job.entry,
-            nodeDelta,
-          });
-          const accepted = await observableSnapshot(client, {
-            integrityFields: ["Life", "TotalEHP"],
-          });
-          result.parity = {
-            exact: true,
-            nonMutating: true,
-            delta: nodeDelta,
-          };
-          result.drift = drift(baseline, accepted);
-          if (result.drift.length) {
+          const declaredDelta = declaredPassiveDelta(job.entry);
+          if (
+            job.entry.delta &&
+            stableStringify(nodeDelta) !== stableStringify(declaredDelta)
+          ) {
             result.status = "drift";
+            result.drift = [{
+              field: "candidateDelta",
+              before: declaredDelta,
+              after: nodeDelta,
+            }];
           } else {
-            result.metrics = measured.metrics;
-            result.objectives = measured.metrics;
-            result.objectiveSources = measured.objectiveSources;
-            result.unavailableOptional = measured.unavailableOptional;
-            if (measured.missingRequired.length) {
-              result.status = "failure";
-              result.error =
-                "Missing required objectives: " +
-                measured.missingRequired.join(", ");
+            const measured = await extractObjectives({
+              client,
+              skills: baseline.skills,
+              objectiveSet,
+              entry: job.entry,
+              nodeDelta,
+            });
+            const accepted = await observableSnapshot(client, {
+              integrityFields: ["Life", "TotalEHP"],
+            });
+            result.parity = {
+              exact: true,
+              nonMutating: true,
+              delta: nodeDelta,
+            };
+            result.drift = drift(baseline, accepted);
+            if (result.drift.length) {
+              result.status = "drift";
             } else {
-              result.status = "success";
-              result.accepted = true;
+              result.metrics = measured.metrics;
+              result.objectives = measured.metrics;
+              result.objectiveSources = measured.objectiveSources;
+              result.unavailableOptional = measured.unavailableOptional;
+              if (measured.missingRequired.length) {
+                result.status = "failure";
+                result.error =
+                  "Missing required objectives: " +
+                  measured.missingRequired.join(", ");
+              } else {
+                result.status = "success";
+                result.accepted = true;
+              }
             }
           }
         }
@@ -2160,6 +2204,7 @@ module.exports = {
   allocateSelectionCounts,
   cacheKeyFor,
   completeCacheIdentity,
+  declaredPassiveDelta,
   evaluateSelectiveCandidates,
   extractObjectives,
   normalizeObjectiveSet,
