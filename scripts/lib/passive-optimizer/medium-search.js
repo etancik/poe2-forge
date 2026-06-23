@@ -22,18 +22,31 @@ const MEDIUM_SEARCH_VERSION = 1;
 const TRANSACTION_TYPES = [
   "remove_articulation_branch",
   "add_remote_branch",
+  "add_remote_bundle",
   "replace_equivalent_cluster",
   "reroute_biconnected_components",
   "prune_dead_travel",
 ];
 
-function preservedState(candidate) {
+function preservedState(
+  candidate,
+  reference = candidate,
+  { allowAttributeRespec = false } = {},
+) {
+  const existingAttributeIds = new Set(
+    Object.keys(reference.attributeOverrides || {}),
+  );
   return stableStringify({
     classId: candidate.classId,
     classStart: candidate.classStart,
     primaryAscendancy: candidate.primaryAscendancy,
     secondaryAscendancy: candidate.secondaryAscendancy,
-    attributeOverrides: candidate.attributeOverrides,
+    attributeOverrides: allowAttributeRespec
+      ? {}
+      : Object.fromEntries(
+          Object.entries(candidate.attributeOverrides || {})
+            .filter(([id]) => existingAttributeIds.has(id)),
+        ),
     switchableOverrides: candidate.switchableOverrides,
     multipleChoiceSelections: candidate.multipleChoiceSelections,
     masterySelections: candidate.masterySelections,
@@ -182,6 +195,14 @@ function transactionFamily(pkg) {
   return pkg ? roleFamily(pkg) : "travel";
 }
 
+function addedPackages(spec) {
+  return spec.addPackages?.length
+    ? spec.addPackages
+    : spec.addPackage
+      ? [spec.addPackage]
+      : [];
+}
+
 function safeRemotePackage(graph, pkg) {
   return (pkg.addNodeIds || []).every((id) => {
     const node = graph.nodes.get(id);
@@ -198,6 +219,32 @@ function safeRemotePackage(graph, pkg) {
   });
 }
 
+function dominantAttributeOverride(candidate) {
+  const counts = new Map();
+  for (const value of Object.values(candidate.attributeOverrides || {})) {
+    counts.set(value, (counts.get(value) || 0) + 1);
+  }
+  return [...counts]
+    .sort(
+      (left, right) =>
+        right[1] - left[1] ||
+        String(left[0]).localeCompare(String(right[0])),
+    )[0]?.[0] || "str";
+}
+
+function safeConnectorNode(graph, id) {
+  const node = graph.nodes.get(id);
+  return Boolean(
+    node &&
+    !node.isOnlyImage &&
+    !node.ascendancyId &&
+    (!node.isSwitchable || node.isAttribute) &&
+    !node.isMultipleChoice &&
+    !node.isMultipleChoiceOption &&
+    !node.isMastery,
+  );
+}
+
 function createTransactionSpecs({
   graph,
   candidate,
@@ -212,7 +259,19 @@ function createTransactionSpecs({
   seed = 0,
   minChanges = 20,
   maxChanges = 30,
+  diagnostics = null,
 }) {
+  const generation = diagnostics || {};
+  generation.remoteBundle = {
+    branches: 0,
+    budgetFeasible: 0,
+    pathsMissing: 0,
+    removedOverlap: 0,
+    unsafePath: 0,
+    remoteOptions: 0,
+    belowMinimum: 0,
+    specsAdded: 0,
+  };
   const allocated = new Set(candidate.allocatedNodeIds);
   const branches = articulationBranches(graph, candidate, { maxChanges })
     .slice(0, branchLimit);
@@ -311,6 +370,7 @@ function createTransactionSpecs({
       type: spec.type,
       branch: spec.branch?.id || null,
       addPackage: spec.addPackage?.id || null,
+      addPackages: addedPackages(spec).map((pkg) => pkg.id).sort(),
       removePackage: spec.removePackage?.id || null,
     });
     if (seen.has(key) || specs.length >= transactionLimit) return;
@@ -322,14 +382,16 @@ function createTransactionSpecs({
     add({ type: "remove_articulation_branch", branch });
     add({ type: "prune_dead_travel", branch });
   }
+  const singleRemoteSpecLimit = Math.max(
+    specs.length,
+    Math.floor(transactionLimit * 0.65),
+  );
   for (const branch of fundingBranches) {
     for (const pkg of inactive) {
-      if (specs.length >= transactionLimit) break;
+      if (specs.length >= singleRemoteSpecLimit) break;
       const path = shortestPathToPackage(graph, candidate, pkg);
       if (!path) continue;
-      if (!path.every((id) => safeRemotePackage(graph, {
-        addNodeIds: [id],
-      }))) {
+      if (!path.every((id) => safeConnectorNode(graph, id))) {
         continue;
       }
       const addCount = new Set([
@@ -360,6 +422,86 @@ function createTransactionSpecs({
       }
     }
   }
+  for (const branch of fundingBranches) {
+    generation.remoteBundle.branches += 1;
+    const removed = new Set(branch.removeNodeIds);
+    const fundedCandidate = applySearchDelta(candidate, {
+      removeNodeIds: branch.removeNodeIds,
+    });
+    const maximumAdded = Math.min(
+      branch.removeNodeIds.length,
+      maxChanges - branch.removeNodeIds.length,
+    );
+    const minimumAdded = Math.max(
+      minChanges - branch.removeNodeIds.length,
+      Math.min(10, Math.ceil(branch.removeNodeIds.length * 0.5)),
+    );
+    if (maximumAdded < minimumAdded) continue;
+    generation.remoteBundle.budgetFeasible += 1;
+    const remote = inactive
+      .map((pkg) => ({
+        pkg,
+        path: shortestPathToPackage(graph, fundedCandidate, pkg),
+      }))
+      .filter(({ pkg, path }) => {
+        if (!path) {
+          generation.remoteBundle.pathsMissing += 1;
+          return false;
+        }
+        if ([...path, ...(pkg.addNodeIds || [])].some((id) => removed.has(id))) {
+          generation.remoteBundle.removedOverlap += 1;
+          return false;
+        }
+        if (!path.every((id) => safeConnectorNode(graph, id))) {
+          generation.remoteBundle.unsafePath += 1;
+          return false;
+        }
+        generation.remoteBundle.remoteOptions += 1;
+        return true;
+      });
+    for (
+      let start = 0;
+      start < Math.min(remote.length, branchLimit);
+      start += 1
+    ) {
+      const selected = [];
+      const selectedIds = new Set();
+      const nodes = new Set();
+      for (let offset = 0; offset < remote.length; offset += 1) {
+        const option = remote[(start + offset) % remote.length];
+        if (selectedIds.has(option.pkg.id)) continue;
+        const conflicts = new Set(option.pkg.conflicts || []);
+        if (selected.some((entry) =>
+          conflicts.has(entry.pkg.id) ||
+          (entry.pkg.conflicts || []).includes(option.pkg.id)
+        )) {
+          continue;
+        }
+        const nextNodes = new Set(nodes);
+        for (const id of [...option.path, ...(option.pkg.addNodeIds || [])]) {
+          if (!allocated.has(id)) nextNodes.add(id);
+        }
+        if (nextNodes.size > maximumAdded) continue;
+        selected.push(option);
+        selectedIds.add(option.pkg.id);
+        for (const id of nextNodes) nodes.add(id);
+        if (nodes.size >= minimumAdded) break;
+        if (selected.length >= 8) break;
+      }
+      if (nodes.size < minimumAdded) {
+        generation.remoteBundle.belowMinimum += 1;
+        continue;
+      }
+      const before = specs.length;
+      add({
+        type: "add_remote_bundle",
+        branch,
+        addPackages: selected.map((entry) => entry.pkg),
+        path: sortedUniqueNumbers(selected.flatMap((entry) => entry.path)),
+      });
+      if (specs.length > before) generation.remoteBundle.specsAdded += 1;
+    }
+  }
   const activeByRole = new Map();
   for (const pkg of active) {
     const role = transactionFamily(pkg);
@@ -375,9 +517,7 @@ function createTransactionSpecs({
       if (!branch) continue;
       const path = shortestPathToPackage(graph, candidate, pkg);
       if (!path) continue;
-      if (!path.every((id) => safeRemotePackage(graph, {
-        addNodeIds: [id],
-      }))) {
+      if (!path.every((id) => safeConnectorNode(graph, id))) {
         continue;
       }
       const addCount = new Set([
@@ -444,9 +584,17 @@ function executeMediumTransaction({
   spec,
   minChanges = 20,
   maxChanges = 30,
+  allowAttributeRespec = false,
 }) {
   const protectedIds = protectedNodeIds(incumbent, graph);
-  const beforeState = preservedState(incumbent);
+  if (allowAttributeRespec) {
+    for (const id of Object.keys(incumbent.attributeOverrides || {}).map(Number)) {
+      if (!(incumbent.requiredNodeIds || []).includes(id)) protectedIds.delete(id);
+    }
+  }
+  const beforeState = preservedState(incumbent, incumbent, {
+    allowAttributeRespec,
+  });
   const removeNodeIds = sortedUniqueNumbers([
     ...(spec.branch?.removeNodeIds || []),
     ...(spec.removePackage?.addNodeIds || []),
@@ -466,7 +614,7 @@ function executeMediumTransaction({
   }
   const addNodeIds = sortedUniqueNumbers([
     ...(spec.path || []),
-    ...(spec.addPackage?.addNodeIds || []),
+    ...addedPackages(spec).flatMap((pkg) => pkg.addNodeIds || []),
   ]).filter((id) => !incumbent.allocatedNodeIds.includes(id));
   const grown = applySearchDelta(incumbent, { addNodeIds });
   const peakPointOverage = Math.max(
@@ -476,14 +624,14 @@ function executeMediumTransaction({
   let trimmed = applySearchDelta(grown, { removeNodeIds });
   const keepIds = new Set([
     ...protectedIds,
-    ...(spec.addPackage?.coreNodeIds || []),
-    ...(spec.addPackage?.terminalLandmarkIds || []),
+    ...addedPackages(spec).flatMap((pkg) => pkg.coreNodeIds || []),
+    ...addedPackages(spec).flatMap((pkg) => pkg.terminalLandmarkIds || []),
     ...(spec.path || []),
   ]);
   const growTrimRemovedNodeIds = [];
   const optionalAdded = sortedUniqueNumbers([
-    ...(spec.addPackage?.optionalNodeIds || []),
-    ...(spec.addPackage?.addNodeIds || []),
+    ...addedPackages(spec).flatMap((pkg) => pkg.optionalNodeIds || []),
+    ...addedPackages(spec).flatMap((pkg) => pkg.addNodeIds || []),
   ]).filter(
     (id) =>
       !keepIds.has(id) &&
@@ -513,7 +661,24 @@ function executeMediumTransaction({
       peakPointOverage,
     };
   }
-  const candidate = withCandidateKey(repair.candidate);
+  const allocatedAfterRepair = new Set(repair.candidate.allocatedNodeIds);
+  const attributeOverrides = Object.fromEntries(
+    Object.entries(repair.candidate.attributeOverrides || {})
+      .filter(([id]) => !allowAttributeRespec || allocatedAfterRepair.has(Number(id))),
+  );
+  const inheritedAttribute = dominantAttributeOverride(incumbent);
+  for (const id of repair.candidate.allocatedNodeIds) {
+    if (
+      graph.nodes.get(id)?.isAttribute &&
+      attributeOverrides[id] === undefined
+    ) {
+      attributeOverrides[id] = inheritedAttribute;
+    }
+  }
+  const candidate = withCandidateKey({
+    ...repair.candidate,
+    attributeOverrides,
+  });
   const delta = candidateDelta(incumbent, candidate);
   const changed = delta.addNodeIds.length + delta.removeNodeIds.length;
   if (changed < minChanges || changed > maxChanges) {
@@ -525,7 +690,9 @@ function executeMediumTransaction({
       peakPointOverage,
     };
   }
-  if (preservedState(candidate) !== beforeState) {
+  if (preservedState(candidate, incumbent, {
+    allowAttributeRespec,
+  }) !== beforeState) {
     return {
       committed: false,
       candidate: incumbent,
@@ -592,6 +759,7 @@ function runMediumRebuildSearch(input) {
   }
   const started = performance.now();
   const baselineSnapshot = stableStringify(incumbent);
+  const generationDiagnostics = {};
   const specs = createTransactionSpecs({
     graph,
     candidate: incumbent,
@@ -600,6 +768,7 @@ function runMediumRebuildSearch(input) {
     buildState,
     baselineMetrics,
     scorerConfig,
+    diagnostics: generationDiagnostics,
     ...options,
   });
   const packageById = new Map(packages.map((pkg) => [pkg.id, pkg]));
@@ -663,9 +832,10 @@ function runMediumRebuildSearch(input) {
       }
       seen.add(transaction.candidate.canonicalKey);
       const effects = [
-        ...(spec.addPackage
-          ? [{ packageId: spec.addPackage.id, direction: 1 }]
-          : []),
+        ...addedPackages(spec).map((pkg) => ({
+          packageId: pkg.id,
+          direction: 1,
+        })),
         ...(spec.removePackage
           ? [{ packageId: spec.removePackage.id, direction: -1 }]
           : []),
@@ -697,12 +867,14 @@ function runMediumRebuildSearch(input) {
         ...score,
         changedNodeIds: changedNodes(incumbent, transaction.candidate),
         changedNodeCount: transaction.changed,
-        families: [transactionFamily(spec.addPackage)],
+        families: [...new Set(
+          addedPackages(spec).map(transactionFamily),
+        )].sort(),
         moveHistory: [{
           id: spec.id,
           type: spec.type,
           packageIds: [
-            spec.addPackage?.id,
+            ...addedPackages(spec).map((pkg) => pkg.id),
             spec.removePackage?.id,
           ].filter(Boolean),
           articulationId: spec.branch?.articulationId ?? null,
@@ -780,6 +952,7 @@ function runMediumRebuildSearch(input) {
     mediumSearchVersion: MEDIUM_SEARCH_VERSION,
     options,
     counts,
+    generationDiagnostics,
     runtime: {
       elapsedMs: performance.now() - started,
       limited: runtimeLimited,

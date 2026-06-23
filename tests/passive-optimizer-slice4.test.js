@@ -275,6 +275,125 @@ test("grow-then-trim uses a temporary point bank and commits a legal final tree"
   assert.ok(!result.candidate.allocatedNodeIds.includes(13));
 });
 
+test("remote package bundles replace a branch with a coherent multi-cluster tree", () => {
+  const graph = graphFixture();
+  const incumbent = candidateFixture();
+  const result = executeMediumTransaction({
+    graph,
+    incumbent,
+    spec: {
+      type: "add_remote_bundle",
+      branch: {
+        removeNodeIds: Array.from({ length: 12 }, (_, index) => index + 2),
+      },
+      addPackages: [
+        pkg("remote-a", [20, 21, 22, 23]),
+        pkg("remote-b", [24, 25, 26, 27]),
+        pkg("remote-c", [28, 29, 30, 31]),
+      ],
+      path: [1, ...Array.from({ length: 12 }, (_, index) => index + 20)],
+    },
+    minChanges: 20,
+    maxChanges: 30,
+  });
+  assert.equal(result.committed, true, result.reason);
+  assert.equal(result.delta.addNodeIds.length, 12);
+  assert.equal(result.delta.removeNodeIds.length, 12);
+  assert.equal(result.changed, 24);
+  assert.equal(result.validation.valid, true);
+});
+
+test("transaction generation includes balanced remote package bundles", () => {
+  const graph = graphFixture();
+  graph.nodes.get(20).isAttribute = true;
+  graph.nodes.get(20).isSwitchable = true;
+  const incumbent = candidateFixture();
+  const packages = [
+    pkg("old-cluster", Array.from({ length: 12 }, (_, index) => index + 2), {
+      group: 1,
+      componentIds: [0],
+    }),
+    pkg("remote-a", [20, 21, 22, 23], {
+      group: 2,
+      componentIds: [12],
+    }),
+    pkg("remote-b", [24, 25, 26, 27], {
+      group: 2,
+      componentIds: [12],
+    }),
+    pkg("remote-c", [28, 29, 30, 31], {
+      group: 2,
+      componentIds: [12],
+    }),
+  ];
+  const specs = createTransactionSpecs({
+    graph,
+    candidate: incumbent,
+    packages,
+    profile: PROFILE,
+    branchLimit: 12,
+    remotePackageLimit: 20,
+    transactionLimit: 200,
+    minChanges: 20,
+    maxChanges: 30,
+  });
+  const bundle = specs.find((entry) => entry.type === "add_remote_bundle");
+  assert.ok(bundle);
+  assert.ok(bundle.addPackages.length >= 1);
+  const result = executeMediumTransaction({
+    graph,
+    incumbent,
+    spec: bundle,
+    minChanges: 20,
+    maxChanges: 30,
+  });
+  assert.equal(result.committed, true, result.reason);
+  assert.ok(result.delta.addNodeIds.length >= 8);
+  assert.ok(result.delta.removeNodeIds.length >= 8);
+  assert.equal(result.candidate.attributeOverrides[20], "str");
+});
+
+test("full rebuild may respec allocated attribute-choice connectors", () => {
+  const graph = graphFixture();
+  graph.nodes.get(2).isAttribute = true;
+  graph.nodes.get(2).isSwitchable = true;
+  graph.nodes.get(1).adjacency.push(20);
+  graph.nodes.get(20).adjacency.push(1);
+  const incumbent = {
+    ...candidateFixture(),
+    attributeOverrides: { 2: "str" },
+    budgets: {
+      ...candidateFixture().budgets,
+      ordinary: 30,
+      total: 30,
+    },
+  };
+  const result = executeMediumTransaction({
+    graph,
+    incumbent,
+    spec: {
+      type: "add_remote_branch",
+      branch: {
+        removeNodeIds: Array.from({ length: 12 }, (_, index) => index + 2),
+      },
+      addPackage: pkg(
+        "remote",
+        Array.from({ length: 12 }, (_, index) => index + 20),
+      ),
+      path: [1, ...Array.from({ length: 12 }, (_, index) => index + 20)],
+    },
+    minChanges: 1,
+    maxChanges: 30,
+    allowAttributeRespec: true,
+  });
+  assert.equal(
+    result.committed,
+    true,
+    `${result.reason}: ${JSON.stringify(result.validation || {})}`,
+  );
+  assert.ok(!result.candidate.allocatedNodeIds.includes(2));
+});
+
 test("medium search is reproducible and enforces strict final budgets", () => {
   const input = {
     graph: graphFixture(),

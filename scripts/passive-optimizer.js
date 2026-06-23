@@ -1031,6 +1031,7 @@ async function main() {
     artifact.search = args.mediumRebuild
       ? runMediumRebuildSearch({
           ...searchInput,
+          allowAttributeRespec: args.mode === "rebuild",
           minChanges: args.explicit.minChanges ? args.minChanges : 20,
           branchLimit: preset.branchLimit,
           remotePackageLimit: preset.remotePackageLimit,
