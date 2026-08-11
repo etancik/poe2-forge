@@ -1,29 +1,18 @@
 # Passive-Tree Validation
 
-Calculator acceptance does not prove that a tree is legal.
+PoB acceptance does not prove that a tree is legal or unchanged in unrelated
+state. Before recommending a variant, verify:
 
-Before recommending a variant, verify:
+- requested additions, removals, and full connector chains;
+- connectivity and ordinary, ascendancy, weapon-set, and other point budgets;
+- class start, trial, socket, attribute-choice, and special-node state;
+- selected spec, ascendancy identity, level, attributes, items, and skills.
 
-- requested additions and removals are present;
-- connectivity and passive-point budget;
-- class start, weapon-set, trial, socket, and special-node constraints;
-- ascendancy identity and available ascendancy points.
-- unrelated state such as level, attributes, item set, and skill selection did
-  not change during tree import.
+Reject foreign-ascendancy and disconnected allocations. Exclude ascendancy
+nodes unless the user requests ascendancy planning. Search legal remove-and-add
+trees for transitions; do not limit future archetypes to incremental additions.
 
-Reject foreign-ascendancy and disconnected allocations even if the backend
-accepts them. Exclude ascendancy nodes from ordinary searches unless the user
-requests ascendancy planning.
-
-For transition planning, search legal remove-and-add trees rather than only
-nodes reachable as incremental additions. Compare the current tree, playable
-intermediate milestones, and the target archetype against their own level and
-point budgets.
-
-Use `inspect-build.js --sections tree` for the allocated tree and the
-runtime's `search_nodes` action for bounded searches. Limit candidates before
-writing output; never emit the complete tree JSON as the default result.
-
-If a tree mutation changes unrelated state, reject that measurement and use a
-small custom experiment importing the shared PoB client until the runtime
-mutation path is repaired. Do not normalize the drift away.
+Use `inspect-build.js --sections tree` for the allocated tree and
+`inspect-tree.js` for bounded candidate/leaf scans. Use non-mutating
+`calc_with_stats` for exact metrics. `set_tree` is legality smoke only because
+it can discard attribute-node choices. Never apply a candidate automatically.

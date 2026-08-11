@@ -6,20 +6,39 @@ Run:
 node scripts/run-experiment.js <spec.json> --output summary.json
 ```
 
-Minimal shape:
+Use the complete scenario emitted by `refresh-build.js`:
 
 ```json
 {
-  "name": "one-point-passive-check",
-  "build": "PATH/Build.xml",
+  "name": "focused-passive-check",
+  "build": "C:\\path\\Build.xml",
   "scope": "focused",
   "metrics": ["Life", "TotalEHP", "TotalDPS"],
   "xmlScenario": {
-    "placeholders": {"enemyLevel": 33, "enemyDistance": 20},
-    "inputs": {"resistancePenalty": -20, "enemyDistance": 20}
+    "placeholders": {
+      "enemyLevel": 42,
+      "enemyEvasion": 369,
+      "enemyArmour": 479
+    },
+    "inputs": {
+      "enemyLevel": 42,
+      "enemyEvasion": 369,
+      "enemyArmour": 479,
+      "enemyDistance": 20,
+      "resistancePenalty": -20
+    }
   },
   "scenarioActions": [
-    {"action": "set_config", "params": {"enemyLevel": 33}}
+    {
+      "action": "set_config",
+      "params": {
+        "enemyLevel": 42,
+        "enemyEvasion": 369,
+        "enemyArmour": 479,
+        "enemyDistance": 20,
+        "resistancePenalty": -20
+      }
+    }
   ],
   "variants": [
     {
@@ -34,28 +53,17 @@ Minimal shape:
   ],
   "sort": {"metric": "TotalEHP", "direction": "desc"},
   "summaryMetrics": ["TotalEHP", "Life", "TotalDPS"],
-  "stdoutTopN": 3,
-  "topN": 5
+  "stdoutTopN": 5,
+  "topN": 8
 }
 ```
 
-Every variant starts from a fresh load of the same build, then receives the
-same `scenarioActions`, followed by its own actions. Supported actions are the
-runtime's JSON API actions. Use action-level `expect` or final `assertions` to
-prove important mutations.
+Every variant reloads the same build, applies the shared scenario, then its own
+actions. The runner requires all five scenario fields and verifies them for the
+baseline and every variant. Supported assertion operations are `equals`,
+`notEquals`, `includes`, `notIncludes`, `gte`, `lte`, and `exists`.
 
-Use `xmlScenario` for values that must exist before PoB initializes the build,
-especially campaign resistance penalty and saved placeholders. Use
-`scenarioActions` for ordinary runtime configuration.
-
-Supported assertion operations: `equals`, `notEquals`, `includes`,
-`notIncludes`, `gte`, `lte`, and `exists`.
-
-Set `approved: true` only after the user approves a medium or large preflight.
-Use `--raw` only for debugging or reproducibility. Normal output contains
-filtered metrics, deltas, validation, runtime metadata, and top variants.
-
-The saved `--output` artifact is complete for the requested `topN`; stdout is
-a smaller decision summary. Do not print the saved artifact again. Set
-`summaryMetrics` to at most six fields. Use `--full-stdout` only when debugging
-the reporting layer itself.
+Up to 12 variants run as `small`; 13-40 run as bounded `medium`. Only `large`
+work above 40 variants or explicit exhaustive work requires `approved: true`.
+Normal stdout contains at most six metrics and five top variants. Use
+`--full-stdout` only to debug reporting.

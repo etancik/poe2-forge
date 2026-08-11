@@ -1,29 +1,42 @@
 #!/usr/bin/env node
 "use strict";
 
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const { PobClient, resolveRuntime } = require("./lib/pob-client");
+const { resolveScenario } = require("./lib/scenario-resolver");
+const {
+  activeSavedScenario,
+  effectiveScenario,
+  parseSavedScenario,
+  scenarioChecks,
+} = require("./lib/passive-optimizer/scenario");
 
 function parseArgs(argv) {
-  const args = { sections: ["info", "stats"], metrics: [] };
-  for (let i = 2; i < argv.length; i += 1) {
-    if (argv[i] === "--build") args.build = path.resolve(argv[++i]);
-    else if (argv[i] === "--sections") args.sections = argv[++i].split(",");
-    else if (argv[i] === "--metrics") args.metrics = argv[++i].split(",");
-    else if (argv[i] === "--metadata-only") args.metadataOnly = true;
-    else if (argv[i] === "--raw-items") args.rawItems = true;
-    else if (argv[i] === "--full-stdout") args.fullStdout = true;
-    else if (argv[i] === "--quiet") args.quiet = true;
-    else if (argv[i] === "--current-runtime") args.currentRuntime = argv[++i];
-    else if (argv[i] === "--output") args.output = path.resolve(argv[++i]);
-    else if (argv[i] === "--enemy-level") args.enemyLevel = Number(argv[++i]);
-    else if (argv[i] === "--enemy-evasion") args.enemyEvasion = Number(argv[++i]);
-    else if (argv[i] === "--enemy-armour") args.enemyArmour = Number(argv[++i]);
-    else if (argv[i] === "--enemy-distance") args.enemyDistance = Number(argv[++i]);
-    else if (argv[i] === "--resistance-penalty") args.resistancePenalty = Number(argv[++i]);
-    else throw new Error(`Unknown argument: ${argv[i]}`);
+  const args = {
+    sections: ["info", "stats"],
+    metrics: [],
+    enemyDistance: 20,
+  };
+  for (let index = 2; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--build") args.build = path.resolve(argv[++index]);
+    else if (arg === "--sections") args.sections = argv[++index].split(",");
+    else if (arg === "--metrics") args.metrics = argv[++index].split(",");
+    else if (arg === "--metadata-only") args.metadataOnly = true;
+    else if (arg === "--raw-items") args.rawItems = true;
+    else if (arg === "--full-stdout") args.fullStdout = true;
+    else if (arg === "--quiet") args.quiet = true;
+    else if (arg === "--current-runtime") args.currentRuntime = argv[++index];
+    else if (arg === "--output") args.output = path.resolve(argv[++index]);
+    else if (arg === "--act") args.act = Number(argv[++index]);
+    else if (arg === "--area-level") args.areaLevel = Number(argv[++index]);
+    else if (arg === "--enemy-level") args.enemyLevel = Number(argv[++index]);
+    else if (arg === "--enemy-distance") args.enemyDistance = Number(argv[++index]);
+    else if (arg === "--resistance-penalty") {
+      args.resistancePenalty = Number(argv[++index]);
+    } else throw new Error(`Unknown argument: ${arg}`);
   }
   if (!args.build) throw new Error("Missing --build");
   return args;
@@ -33,11 +46,20 @@ function skillSummary(skills) {
   return (skills?.groups || [])
     .filter((group) => group.enabled)
     .map((group) => ({
+      index: group.index,
       active: group.skills?.[group.mainActiveSkill - 1] || group.skills?.[0],
       gems: (group.gems || [])
         .filter((gem) => gem.enabled)
         .map((gem) => gem.name),
     }));
+}
+
+function staleSavedScenario(saved, expected) {
+  return Object.entries(saved || {}).flatMap(([field, value]) =>
+    expected[field] === undefined || Number(value) === Number(expected[field])
+      ? []
+      : [{ field, saved: Number(value), applied: Number(expected[field]) }],
+  );
 }
 
 function compactSummary(result) {
@@ -52,8 +74,13 @@ function compactSummary(result) {
         result.file?.buildAttributes?.ascendClassName,
     },
     scenario: result.appliedScenario,
+    progression: result.progression,
     scenarioValid: (result.scenarioValidation || []).every(
       (check) => check.passed,
+    ),
+    correctedSavedFields: staleSavedScenario(
+      result.file?.savedScenario,
+      result.appliedScenario,
     ),
     stats: result.stats,
     tree: result.tree
@@ -67,8 +94,7 @@ function compactSummary(result) {
           result.items
             .filter(
               (item) =>
-                !item.type ||
-                !["Charm", "Flask", "Jewel"].includes(item.type),
+                !item.type || !["Charm", "Flask", "Jewel"].includes(item.type),
             )
             .map((item) => [item.slot, item.name]),
         )
@@ -80,10 +106,9 @@ function compactSummary(result) {
 
 function emit(result, args) {
   const text = `${JSON.stringify(result, null, 2)}\n`;
-  const output = args.output;
-  if (output) {
-    fs.mkdirSync(path.dirname(output), { recursive: true });
-    fs.writeFileSync(output, text);
+  if (args.output) {
+    fs.mkdirSync(path.dirname(args.output), { recursive: true });
+    fs.writeFileSync(args.output, text);
   }
   if (!args.quiet) {
     const stdoutValue = args.fullStdout ? result : compactSummary(result);
@@ -102,25 +127,13 @@ function fileMetadata(file) {
       attributes[match[1]] = match[2];
     }
   }
-  const savedScenario = {};
-  for (const tag of text.matchAll(/<(Placeholder|Input)\b[^>]*\/>/g)) {
-    const name = tag[0].match(/\bname="([^"]*)"/)?.[1];
-    const number = tag[0].match(/\bnumber="([^"]*)"/)?.[1];
-    if (
-      name &&
-      number !== undefined &&
-      /^(enemyLevel|enemyDistance|enemyEvasion|enemyArmour|resistancePenalty)$/i.test(name)
-    ) {
-      savedScenario[name] = Number(number);
-    }
-  }
   return {
     file: path.basename(file),
     bytes: stat.size,
     modified: stat.mtime.toISOString(),
     sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
     buildAttributes: attributes,
-    savedScenario,
+    savedScenario: activeSavedScenario(parseSavedScenario(text)),
   };
 }
 
@@ -148,62 +161,50 @@ async function main() {
     emit(result, args);
     return;
   }
+  const level = Number(result.file.buildAttributes.level);
+  if (!Number.isFinite(level) || level < 1) throw new Error("Invalid build level");
   const runtime = resolveRuntime(args.currentRuntime);
+  const scenario = resolveScenario({
+    runtimeDir: runtime.runtime,
+    characterLevel: level,
+    act: args.act,
+    areaLevel: args.areaLevel,
+    enemyLevel: args.enemyLevel,
+    enemyDistance: args.enemyDistance,
+    resistancePenalty: args.resistancePenalty,
+  });
+  if (scenario.progression.confirmationRequired) {
+    if (!args.quiet) {
+      process.stdout.write(`${JSON.stringify({
+        ok: false,
+        requiresInput: true,
+        input: "current-act-or-area-level",
+        ...scenario.progression.confirmationRequired,
+      }, null, 2)}\n`);
+    }
+    process.exitCode = 2;
+    return;
+  }
+
   const client = new PobClient(runtime);
   try {
     result.ready = await client.ready();
-    const xmlScenario = { placeholders: {}, inputs: {} };
-    if (Number.isFinite(args.enemyLevel)) {
-      xmlScenario.placeholders.enemyLevel = args.enemyLevel;
-    }
-    if (Number.isFinite(args.enemyEvasion)) {
-      xmlScenario.placeholders.enemyEvasion = args.enemyEvasion;
-    }
-    if (Number.isFinite(args.enemyArmour)) {
-      xmlScenario.placeholders.enemyArmour = args.enemyArmour;
-    }
-    if (Number.isFinite(args.enemyDistance)) {
-      xmlScenario.placeholders.enemyDistance = args.enemyDistance;
-      xmlScenario.inputs.enemyDistance = args.enemyDistance;
-    }
-    if (Number.isFinite(args.resistancePenalty)) {
-      xmlScenario.inputs.resistancePenalty = args.resistancePenalty;
-    }
-    await client.loadBuild(args.build, xmlScenario);
-    result.loadedConfig = (await client.call("get_config")).config;
-    if (Number.isFinite(args.enemyLevel)) {
-      await client.call("set_config", {
-        enemyLevel: args.enemyLevel,
-        ...(Number.isFinite(args.enemyEvasion)
-          ? { enemyEvasion: args.enemyEvasion }
-          : {}),
-        ...(Number.isFinite(args.enemyArmour)
-          ? { enemyArmour: args.enemyArmour }
-          : {}),
-      });
-    }
-    result.appliedScenario = {
-      ...(Number.isFinite(args.enemyLevel) ? { enemyLevel: args.enemyLevel } : {}),
-      ...(Number.isFinite(args.enemyEvasion)
-        ? { enemyEvasion: args.enemyEvasion }
-        : {}),
-      ...(Number.isFinite(args.enemyArmour)
-        ? { enemyArmour: args.enemyArmour }
-        : {}),
-      ...(Number.isFinite(args.enemyDistance) ? { enemyDistance: args.enemyDistance } : {}),
-      ...(Number.isFinite(args.resistancePenalty)
-        ? { resistancePenalty: args.resistancePenalty }
-        : {}),
-    };
+    await client.loadBuild(args.build, scenario.xmlScenario);
+    await client.call("set_config", scenario.expected);
     const effectiveConfig = (await client.call("get_config")).config;
-    result.scenarioValidation = [];
-    if (Number.isFinite(args.enemyLevel)) {
-      result.scenarioValidation.push({
-        field: "enemyLevel",
-        expected: args.enemyLevel,
-        actual: Number(effectiveConfig.enemyLevel),
-        passed: Number(effectiveConfig.enemyLevel) === args.enemyLevel,
-      });
+    result.appliedScenario = scenario.expected;
+    result.progression = scenario.progression;
+    result.scenarioValidation = scenarioChecks(
+      scenario.expected,
+      effectiveScenario(effectiveConfig),
+    );
+    const failures = result.scenarioValidation.filter((check) => !check.passed);
+    if (failures.length) {
+      throw new Error(
+        `Effective scenario mismatch: ${failures
+          .map((check) => `${check.field} expected ${check.expected}, got ${check.actual}`)
+          .join("; ")}`,
+      );
     }
     for (const section of args.sections) {
       if (section === "info") {
@@ -224,7 +225,7 @@ async function main() {
       } else if (section === "tree") {
         result.tree = (await client.call("get_tree")).tree;
       } else if (section === "config") {
-        result.config = (await client.call("get_config")).config;
+        result.config = effectiveConfig;
       } else {
         throw new Error(`Unknown section: ${section}`);
       }
@@ -240,7 +241,17 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  compactSummary,
+  fileMetadata,
+  main,
+  parseArgs,
+  staleSavedScenario,
+};

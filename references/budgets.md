@@ -1,31 +1,21 @@
 # Scope and Calculation Budgets
 
-## Scope
+- `focused`: the named subsystem plus directly competing low-cost solutions.
+- `adjacent`: related changes that may solve the same measured deficit.
+- `holistic`: ideas across passives, ascendancy, gear, gems, skills,
+  configuration, and relevant combinations.
 
-- `focused`: only the explicitly named subsystem or variants.
-- `adjacent`: include directly competing solutions with low extra cost.
-- `holistic`: consider passives, ascendancy, gear, rares, uniques, gems,
-  supports, skills, configuration, and relevant combinations.
+Broad work begins with internet and static triage, not a Cartesian product.
 
-Use `focused` without asking for tightly bounded comparisons. For broad goals
-such as survivability, best upgrade, or full build review, recommend
-`holistic` and confirm the scope before calculation. A holistic review starts
-with cheap subsystem triage; it is not permission for an exhaustive Cartesian
-product.
+## Runtime budgets
 
-## Budget classes
-
-- `no-runtime`: interpretation, planning, handoff, or a question for which the
-  backend cannot materially improve the answer.
-- `small`: at most 5 targeted variants and a bounded metric set. Run directly.
-- `medium`: 6-25 variants, a filtered scan, or several related subsystems.
-  Present a high-level plan and wait for approval.
-- `large`: more than 25 variants, exhaustive search, combinatorial work, or
-  broad raw-data processing. Present smaller alternatives and wait for
+- `no-runtime`: interpretation, source revalidation, or shared idea triage.
+- `small`: up to 12 targeted variants. Run directly.
+- `medium`: 13-40 variants or a bounded filtered scan. State the scope in one
+  line and run directly when it is local, read-only, and time-bounded.
+- `large`: more than 40 variants, exhaustive/combinatorial work, or an expected
+  runtime above roughly ten minutes. Present smaller alternatives and wait for
   explicit approval.
 
-Before medium or large work, show the goal, scope choices, approximate variant
-count, inputs, outputs, likely value, and intentional exclusions.
-
-The experiment runner enforces this gate: specs with more than 5 variants must
-set `approved: true`. Approval applies to that described experiment only.
+The experiment runner enforces approval only for `large`. Approval covers the
+described experiment, not later mutation of a saved build.

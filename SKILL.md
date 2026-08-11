@@ -1,83 +1,62 @@
 ---
-name: poe2-forge
-description: Review and optimize game character builds with an authoritative calculator, decide when local measurement is worth its cost, compare focused or holistic changes across passives, gear, uniques, gems, skills, and configuration, and maintain compact persistent character roadmaps. Use for measured build comparisons, progression reviews, upgrade searches, respecs, baseline refreshes, or roadmap audits.
+name: calculator-backed-build-optimizer
+description: Review and optimize Path of Exile 2 builds with current web research and an authoritative Path of Building calculator. Use for build reviews, progression checks, upgrade or respec searches, passive/gear/gem comparisons, configuration repair, or generating and triaging build ideas from current and older community sources.
 ---
 
-# PoE2 Forge
+# Calculator-Backed Build Optimizer
 
-Treat the calculator as the source of truth for measurable effects, but do not
-start it before deciding whether measurement is useful.
+Use current evidence to generate useful options, then use PoB for measurable
+claims. Never treat a saved PoB scenario or community sheet DPS as trusted by
+default.
 
 ## Workflow
 
-1. Run a cheap preflight. State the decision, scope, evidence, and whether
-   local calculation is necessary.
-2. For ordinary saved-build updates, run `scripts/refresh-build.js` first.
-   It performs metadata, level-correct scenario, baseline, delta, tree/item/
-   ascendancy comparison, item completion, and active-baseline update in one
-   process. Stop after its compact result unless it exposes a specific problem
-   or the user approved deeper work.
-3. Choose `focused`, `adjacent`, or `holistic` scope. For future archetypes,
-   evaluate playable transitions and allow removals and respecs.
-4. Classify work using [references/budgets.md](references/budgets.md). Run
-   small work directly; present options before medium or large work.
-5. Load only roadmap metadata and relevant decisions. Follow
-   [references/character-roadmaps.md](references/character-roadmaps.md).
-6. Use bundled scripts instead of rewriting inspection, delta, graph, or
-   roadmap logic:
-   - `scripts/refresh-build.js` for routine progression refreshes;
-   - `scripts/inspect-build.js` for targeted build inspection;
-   - `scripts/inspect-tree.js` for passive candidate and leaf scans;
-   - `scripts/inspect-item-opportunities.js` for detailed augment choices;
+1. Identify the build, goal, player constraints, and whether the request is a
+   focused comparison or broader discovery.
+2. Run `scripts/refresh-build.js --build <build> --output <artifact>` for every
+   calculator-backed review. It derives a level-appropriate scenario from the
+   current runtime and corrects stale saved defaults before measuring.
+3. If refresh returns `requiresInput`, ask only for the current Act or area
+   level, then rerun with `--act` or `--area-level`. Otherwise continue without
+   asking the user to maintain PoB configuration.
+4. For broad reviews or requests for new directions, browse for ideas before
+   committing calculator time. Follow [references/ideation.md](references/ideation.md).
+   Return 6-8 distinct idea cards for shared triage, then measure the 2-4 ideas
+   the user prefers.
+5. Do not discard an old-patch or version-unclear idea automatically. Mark it
+   `needs-revalidation`, check its dependencies against current patch notes,
+   game data, and PoB, translate it when possible, and reject it only with a
+   concrete current-version reason.
+6. For focused work, include directly competing low-cost alternatives and run
+   a bounded comparison immediately. Follow [references/budgets.md](references/budgets.md).
+7. Keep one validated scenario fixed across baseline and variants. Reload the
+   baseline, verify each mutation, and reject scenario or unrelated-state
+   drift. Read [references/poe2-scenarios.md](references/poe2-scenarios.md).
+8. Use bundled entry points instead of one-off audit scripts:
+   - `scripts/inspect-build.js` for calibrated inspection;
+   - `scripts/refresh-build.js` for a trusted snapshot and optional explicit
+     baseline delta;
    - `scripts/run-experiment.js` for controlled variants;
-   - `scripts/roadmap-manager.js` for roadmap summaries and validation;
-   - `scripts/learning-manager.js` for bounded post-evaluation learning.
-7. Keep scenarios fixed, reload baseline for variants, verify mutations, and
-   compare only relevant metrics.
-8. Update semantic roadmap decisions only when evidence changes them.
-9. Run [references/learning.md](references/learning.md) postflight and write
-   at most one reusable rule.
-10. Lead with conclusion, exact change, measured delta, and uncertainty.
+   - `scripts/inspect-item-opportunities.js` before item replacement;
+   - `scripts/inspect-tree.js` and `scripts/passive-optimizer.js` for passives.
+9. Read [references/guardrails.md](references/guardrails.md) before damage,
+   skill-mechanic, or passive experiments. Read
+   [references/item-completion.md](references/item-completion.md) for items,
+   [references/experiment-spec.md](references/experiment-spec.md) for variants,
+   and [references/passive-tree.md](references/passive-tree.md) plus
+   [references/passive-optimizer.md](references/passive-optimizer.md) for tree
+   changes.
+10. Lead with actionable conclusions: exact change, measured delta or evidence
+    status, playstyle/cost tradeoff, uncertainty, and the next useful choice.
 
-If local calculation is unnecessary, prepare a small ChatGPT handoff using
-[references/chat-handoff.md](references/chat-handoff.md).
+## Context discipline
 
-Before proposing item replacement, read
-[references/item-completion.md](references/item-completion.md). For a routine
-refresh, use the integrated completion scan first and open the detailed scan
-only when a specific augment choice is needed.
-
-Read [references/experiment-spec.md](references/experiment-spec.md) before
-creating experiments, [references/poe2-scenarios.md](references/poe2-scenarios.md)
-for configuration work, and [references/passive-tree.md](references/passive-tree.md)
-for passive changes.
-
-For deterministic passive-tree legality checks and connector reroutes, use
-`scripts/passive-optimizer.js` and follow
-[references/passive-optimizer.md](references/passive-optimizer.md). Require an
-explicitly configured, hash-verified tree snapshot; do not replace it during a
-search.
-Use its benchmark-derived medium-rebuild presets for 20-30-node passive
-rebuilds; keep PoB as the exact tier and never apply returned candidates to a
-saved build automatically.
-For bounded exact evaluation, configure explicit objectives, runtime and
-evaluation limits, a persistent cache, and a checkpoint. Resume only matching
-jobs. Treat the cheap and real-PoB Pareto archives separately and use scorer
-diagnostics as calibration evidence, not as permission to mutate a build.
-Require incumbent and near-baseline probes, audit cheap-pruned candidates,
-and prefer build-specific skill objectives plus point/respec costs. Do not
-change scorer features or pruning thresholds without a measured sample that
-clears the configured minimum-sample warning.
-
-Treat stdout as a token budget. Save full artifacts and keep stdout compact.
-Never load a full result merely to summarize it.
-
-## Context handoff
-
-When the conversation contains several completed evaluations, repeated raw
-artifacts, or enough history that another broad review would require rereading
-old work, propose a new thread before starting that review. Prepare a compact
-handoff containing the build path, active baseline, current decisions,
-unresolved questions, runtime/scenario, and the user's requested next action.
-Do not claim to create or switch threads; the user must open the new thread.
-Do not interrupt a small in-progress operation solely for context hygiene.
+- Do not search or load historical Codex task folders, old result dumps, or
+  character roadmaps during ordinary work.
+- Save complete JSON artifacts to disk. Keep stdout to the scenario, baseline,
+  anomalies, 3-5 measured results, and omitted counts.
+- Load only the reference needed for the current subsystem.
+- Reuse a validated refresh artifact as the baseline; never load its full JSON
+  into model context merely to summarize it.
+- Do not mutate a saved build automatically. Applying a reviewed change is a
+  separate user-approved operation.

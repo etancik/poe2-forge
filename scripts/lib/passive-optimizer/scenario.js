@@ -77,6 +77,17 @@ function compareScenario(expectedInput, actualInput, prefix) {
   );
 }
 
+function scenarioChecks(expectedInput, actualInput, prefix = "effective") {
+  const expected = normalizeScenario(expectedInput);
+  const actual = normalizeScenario(actualInput);
+  return Object.entries(expected).map(([field, value]) => ({
+    field: `${prefix}.${field}`,
+    expected: value,
+    actual: actual[field] ?? null,
+    passed: actual[field] === value,
+  }));
+}
+
 function verifySavedScenario(xml, expectedInput) {
   const expected = normalizeScenario(expectedInput);
   const saved = parseSavedScenario(xml);
@@ -126,7 +137,8 @@ async function applyAndVerifyScenario(client, xml, expectedInput) {
   }
   const config = (await client.call("get_config")).config;
   const effective = effectiveScenario(config);
-  const mismatches = compareScenario(expected, effective, "effective");
+  const checks = scenarioChecks(expected, effective, "effective");
+  const mismatches = checks.filter((check) => !check.passed);
   if (mismatches.length) {
     const error = new Error(
       `Effective scenario mismatch: ${mismatches
@@ -135,13 +147,14 @@ async function applyAndVerifyScenario(client, xml, expectedInput) {
         .join("; ")}`,
     );
     error.code = "EFFECTIVE_SCENARIO_MISMATCH";
-    error.scenario = { ...savedReport, effective, mismatches };
+    error.scenario = { ...savedReport, effective, checks, mismatches };
     throw error;
   }
   const normalized = { saved: savedReport.active, effective };
   return {
     ...savedReport,
     effective,
+    checks,
     scenarioHash: sha256(stableStringify(normalized)),
   };
 }
@@ -150,8 +163,10 @@ module.exports = {
   SCENARIO_FIELDS,
   applyAndVerifyScenario,
   activeSavedScenario,
+  compareScenario,
   effectiveScenario,
   normalizeScenario,
   parseSavedScenario,
+  scenarioChecks,
   verifySavedScenario,
 };

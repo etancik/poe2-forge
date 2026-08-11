@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 "use strict";
 
-const crypto = require("crypto");
-const fs = require("fs");
-const path = require("path");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const { PobClient, readJson, resolveRuntime } = require("./lib/pob-client");
+const {
+  SCENARIO_FIELDS,
+  effectiveScenario,
+  normalizeScenario,
+  scenarioChecks,
+} = require("./lib/passive-optimizer/scenario");
 
 function usage() {
   throw new Error(
@@ -15,11 +21,13 @@ function usage() {
 function parseArgs(argv) {
   if (!argv[2]) usage();
   const args = { spec: path.resolve(argv[2]) };
-  for (let i = 3; i < argv.length; i += 1) {
-    if (argv[i] === "--output") args.output = path.resolve(argv[++i] || usage());
-    else if (argv[i] === "--raw") args.raw = path.resolve(argv[++i] || usage());
-    else if (argv[i] === "--full-stdout") args.fullStdout = true;
-    else if (argv[i] === "--quiet") args.quiet = true;
+  for (let index = 3; index < argv.length; index += 1) {
+    if (argv[index] === "--output") {
+      args.output = path.resolve(argv[++index] || usage());
+    } else if (argv[index] === "--raw") {
+      args.raw = path.resolve(argv[++index] || usage());
+    } else if (argv[index] === "--full-stdout") args.fullStdout = true;
+    else if (argv[index] === "--quiet") args.quiet = true;
     else usage();
   }
   return args;
@@ -27,9 +35,31 @@ function parseArgs(argv) {
 
 function budgetFor(spec) {
   const count = (spec.variants || []).length;
-  if (spec.exhaustive || count > 25) return "large";
-  if (spec.filteredScan || count > 5) return "medium";
+  if (spec.exhaustive || count > 40) return "large";
+  if (spec.filteredScan || count > 12) return "medium";
   return "small";
+}
+
+function expectedScenario(spec) {
+  const combined = {
+    ...(spec.xmlScenario?.placeholders || {}),
+    ...(spec.xmlScenario?.inputs || {}),
+  };
+  for (const entry of spec.scenarioActions || []) {
+    if (entry.action !== "set_config") continue;
+    for (const field of SCENARIO_FIELDS) {
+      if (entry.params?.[field] !== undefined) combined[field] = entry.params[field];
+    }
+  }
+  const expected = normalizeScenario(combined);
+  const missing = SCENARIO_FIELDS.filter((field) => expected[field] === undefined);
+  if (missing.length) {
+    throw new Error(
+      `Experiment requires a complete scenario; missing ${missing.join(", ")}. ` +
+      "Use the validated scenario emitted by refresh-build.js.",
+    );
+  }
+  return expected;
 }
 
 function getPath(value, dotted) {
@@ -55,13 +85,9 @@ function assertOne(root, assertion) {
     lte: () => Number(actual) <= Number(expected),
     exists: () => actual !== undefined && actual !== null,
   };
-  const test = operations[assertion.op || "equals"];
-  if (!test) throw new Error(`Unknown assertion op: ${assertion.op}`);
-  return {
-    ...assertion,
-    actual,
-    passed: Boolean(test()),
-  };
+  const operation = operations[assertion.op || "equals"];
+  if (!operation) throw new Error(`Unknown assertion op: ${assertion.op}`);
+  return { ...assertion, actual, passed: Boolean(operation()) };
 }
 
 function numericDeltas(baseline, value) {
@@ -92,13 +118,14 @@ function compactExperimentSummary(summary, spec) {
   const metrics = [...new Set(preferredMetrics)].slice(0, 6);
   const round = (value) =>
     typeof value === "number" ? Number(value.toFixed(2)) : value;
-  const stdoutTopN = Math.max(1, Number(spec.stdoutTopN) || 3);
+  const stdoutTopN = Math.max(1, Number(spec.stdoutTopN) || 5);
   return {
     ok: summary.ok,
     name: summary.name,
     budget: summary.budget,
     variantCount: summary.variantCount,
     scenarioValid: summary.scenarioValid,
+    scenario: summary.scenario,
     baseline: Object.fromEntries(
       metrics
         .filter((metric) => summary.baseline[metric] !== undefined)
@@ -115,10 +142,7 @@ function compactExperimentSummary(summary, spec) {
       deltaPercent: Object.fromEntries(
         metrics
           .filter((metric) => variant.deltas[metric] !== undefined)
-          .map((metric) => [
-            metric,
-            round(variant.deltas[metric].percent),
-          ]),
+          .map((metric) => [metric, round(variant.deltas[metric].percent)]),
       ),
     })),
     omittedFromStdout: Math.max(
@@ -163,6 +187,19 @@ async function snapshot(client, metrics, sections) {
   return result;
 }
 
+function ensureScenario(expected, config, label) {
+  const checks = scenarioChecks(expected, effectiveScenario(config), label);
+  const failures = checks.filter((check) => !check.passed);
+  if (failures.length) {
+    throw new Error(
+      `Scenario drift: ${failures
+        .map((check) => `${check.field} expected ${check.expected}, got ${check.actual}`)
+        .join("; ")}`,
+    );
+  }
+  return checks;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   const spec = readJson(args.spec);
@@ -170,8 +207,8 @@ async function main() {
     throw new Error("Spec requires build and metrics");
   }
   const budget = budgetFor(spec);
-  if (budget !== "small" && spec.approved !== true) {
-    const preflight = {
+  if (budget === "large" && spec.approved !== true) {
+    process.stdout.write(`${JSON.stringify({
       ok: false,
       requiresApproval: true,
       name: spec.name || path.basename(args.spec),
@@ -179,12 +216,12 @@ async function main() {
       budget,
       variantCount: (spec.variants || []).length,
       metrics: spec.metrics,
-    };
-    process.stdout.write(`${JSON.stringify(preflight, null, 2)}\n`);
+    }, null, 2)}\n`);
     process.exitCode = 3;
     return;
   }
 
+  const expected = expectedScenario(spec);
   const buildPath = path.resolve(spec.build);
   const buildBytes = fs.readFileSync(buildPath);
   const runtime = resolveRuntime(spec.currentRuntime);
@@ -198,18 +235,7 @@ async function main() {
     await client.loadBuild(buildPath, spec.xmlScenario);
     await applyActions(client, spec.scenarioActions, []);
     const baseline = await snapshot(client, spec.metrics, sections);
-    const expectedEnemyLevel = spec.xmlScenario?.placeholders?.enemyLevel;
-    const scenarioValidation = [];
-    if (expectedEnemyLevel !== undefined) {
-      scenarioValidation.push({
-        field: "enemyLevel",
-        expected: Number(expectedEnemyLevel),
-        actual: Number(baseline.config?.enemyLevel),
-        passed:
-          Number(baseline.config?.enemyLevel) === Number(expectedEnemyLevel),
-      });
-    }
-    const scenarioValid = scenarioValidation.every((item) => item.passed);
+    const scenarioValidation = ensureScenario(expected, baseline.config, "baseline");
 
     const variants = [];
     for (const variant of spec.variants || []) {
@@ -218,14 +244,22 @@ async function main() {
       await applyActions(client, spec.scenarioActions, actionLog);
       await applyActions(client, variant.actions, actionLog);
       const measured = await snapshot(client, spec.metrics, sections);
+      const variantScenario = ensureScenario(
+        expected,
+        measured.config,
+        `variant.${variant.id}`,
+      );
       const checks = (variant.assertions || []).map((item) =>
         assertOne(measured, item),
       );
       variants.push({
         id: variant.id,
         label: variant.label || variant.id,
-        valid: scenarioValid && checks.every((item) => item.passed),
+        valid:
+          variantScenario.every((item) => item.passed) &&
+          checks.every((item) => item.passed),
         checks,
+        scenarioValidation: variantScenario,
         mode: "mutated-build",
         stats: measured.stats,
         deltas: numericDeltas(baseline.stats, measured.stats),
@@ -237,10 +271,10 @@ async function main() {
     if (sort.metric) {
       const direction = sort.direction === "asc" ? 1 : -1;
       variants.sort(
-        (a, b) =>
+        (left, right) =>
           direction *
-          ((Number(a.stats[sort.metric]) || 0) -
-            (Number(b.stats[sort.metric]) || 0)),
+          ((Number(left.stats[sort.metric]) || 0) -
+            (Number(right.stats[sort.metric]) || 0)),
       );
     }
     const topN = Math.max(1, Number(spec.topN) || variants.length || 1);
@@ -262,8 +296,9 @@ async function main() {
       },
       baseline: baseline.stats,
       effectiveConfig: baseline.config,
+      scenario: expected,
       scenarioValidation,
-      scenarioValid,
+      scenarioValid: true,
       variants: variants.slice(0, topN),
       omittedVariants: Math.max(0, variants.length - topN),
       output: args.output ? path.basename(args.output) : null,
@@ -291,7 +326,17 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = {
+  budgetFor,
+  compactExperimentSummary,
+  ensureScenario,
+  expectedScenario,
+  main,
+};

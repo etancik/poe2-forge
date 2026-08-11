@@ -9,6 +9,7 @@ benchmarks/
 outputs/
 work/
 *.cache.json
+*.checkpoint.json
 *.benchmark.json
 *.log
 *.tmp
@@ -16,13 +17,8 @@ work/
 *.orig
 *~
 builds/
-roadmaps/
-baselines/
-learning.json
 *.xml
 
-# Internal publication and future-development notes
+# Internal publication notes
 /docs/publication-audit.md
 /docs/github-publish-handoff.md
-/references/operations.md
-/references/passive-optimizer-slice5-handoff.md

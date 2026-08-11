@@ -1,4 +1,4 @@
 interface:
-  display_name: "PoE2 Forge"
-  short_description: "Plan, measure, and track efficient build changes"
-  default_prompt: "Use $poe2-forge to preflight this build question, choose an appropriate scope and calculation budget, measure only what needs an authoritative backend, and maintain the character roadmap."
+  display_name: "Calculator-Backed Build Optimizer"
+  short_description: "Generate, triage, and measure PoE2 build ideas"
+  default_prompt: "Use $calculator-backed-build-optimizer to calibrate this PoE2 build automatically, generate or compare useful options, and measure the strongest candidates without loading old roadmap history."

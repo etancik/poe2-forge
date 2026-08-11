@@ -1,8 +1,8 @@
 {
   "name": "poe2-forge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Experimental deterministic passive-tree optimizer with Path of Building as the exact calculator.",
+  "description": "Calculator-backed Path of Exile 2 build review and idea triage tooling.",
   "license": "MIT",
   "type": "commonjs",
   "bin": {
@@ -11,7 +11,8 @@
   "scripts": {
     "audit": "node scripts/publication-scan.js",
     "help": "node scripts/passive-optimizer.js --help",
-    "test": "node --test tests/passive-optimizer.test.js tests/passive-optimizer-slice2.test.js tests/passive-optimizer-slice3.test.js tests/passive-optimizer-slice4.test.js tests/passive-optimizer-slice5.test.js tests/passive-optimizer-slice6.test.js tests/passive-optimizer-slice7.test.js tests/passive-optimizer-slice8.test.js tests/item-completion.test.js tests/portable-config.test.js",
+    "sync:check": "node scripts/sync-installed-skill.js --check",
+    "test": "node --test tests/passive-optimizer.test.js tests/passive-optimizer-slice2.test.js tests/passive-optimizer-slice3.test.js tests/passive-optimizer-slice4.test.js tests/passive-optimizer-slice5.test.js tests/passive-optimizer-slice6.test.js tests/passive-optimizer-slice7.test.js tests/passive-optimizer-slice8.test.js tests/item-completion.test.js tests/portable-config.test.js tests/scenario-resolver.test.js tests/workflow-contract.test.js",
     "test:integration": "node --test tests/passive-optimizer.integration.test.js"
   },
   "engines": {
