@@ -18,6 +18,9 @@ const MECHANIC_PREFIXES = Object.freeze({
   spell: ["mechanic.spell"],
   projectile: ["role.projectile", "damage.projectile"],
   crossbow: ["role.crossbow", "damage.crossbow", "attack.reload", "attack.ammo"],
+  bow: ["role.bow"],
+  melee: ["role.melee"],
+  shield: ["role.shield"],
   totem: ["role.totem", "totem.", "damage.totem"],
   "self-curse": ["mechanic.self-curse"],
 });
@@ -53,6 +56,7 @@ function deriveActiveMechanics(skills = {}) {
     active.add("projectile");
   }
   if (match(/crossbow|bolt|shot|round/)) active.add("crossbow");
+  if (match(/\bmelee\b|slam|strike/)) active.add("melee");
   if (match(/ballista|totem/)) active.add("totem");
   if (match(/curse|hex/)) active.add("self-curse");
   return [...active].sort();
@@ -76,10 +80,27 @@ function packageMechanics(pkg) {
 function relevanceForTags(tags, profile = {}, options = {}) {
   const mechanics = [...new Set(tags.map(mechanicForTag).filter(Boolean))];
   const preferences = normalizePreferences(profile.mechanicPreferences);
+  const active = new Set((profile.activeMechanics || []).map((value) =>
+    String(value).toLowerCase()));
   const states = mechanics.map((mechanic) => ({
     mechanic,
-    state: preferences[mechanic] || "allowed",
+    state: preferences[mechanic] || (active.has(mechanic) ? "preferred" : "allowed"),
   }));
+  const incompatible =
+    (mechanics.includes("shield") && active.has("crossbow")) ||
+    (mechanics.includes("bow") && active.has("crossbow")) ||
+    (
+      mechanics.includes("melee") &&
+      (active.has("crossbow") || active.has("projectile")) &&
+      !active.has("melee")
+    );
+  if (incompatible) {
+    return {
+      accepted: false,
+      reason: "INCOMPATIBLE_ACTIVE_MECHANIC",
+      mechanics: states,
+    };
+  }
   const rejected = states.filter((entry) =>
     ["inactive", "forbidden"].includes(entry.state));
   const accepted = states.filter((entry) => !rejected.includes(entry));
@@ -103,16 +124,10 @@ function relevanceForTags(tags, profile = {}, options = {}) {
   if (accepted.length || tags.length) {
     return { accepted: true, reason: "ACTIVE_MECHANIC", mechanics: states };
   }
-  if (
-    options.uncertain &&
-    (
-      Object.keys(normalizePreferences(profile.mechanicPreferences)).length === 0 ||
-      profile.experimentalUnknown === true
-    )
-  ) {
+  if (options.uncertain) {
     return {
       accepted: true,
-      reason: "EXPERIMENTAL_ALLOWED",
+      reason: "NEEDS_POB_REVALIDATION",
       mechanics: states,
     };
   }

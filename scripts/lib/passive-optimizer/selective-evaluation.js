@@ -28,9 +28,9 @@ const {
   stableStringify,
 } = require("./stable");
 
-const SELECTIVE_EVALUATION_VERSION = 7;
-const CACHE_SCHEMA_VERSION = 7;
-const CHECKPOINT_SCHEMA_VERSION = 6;
+const SELECTIVE_EVALUATION_VERSION = 8;
+const CACHE_SCHEMA_VERSION = 8;
+const CHECKPOINT_SCHEMA_VERSION = 7;
 const OBJECTIVE_EXTRACTOR_VERSION = 5;
 const DEFAULT_MINIMUM_SAMPLE = 8;
 const DEFAULT_NEAR_BASELINE_COUNT = 2;
@@ -563,6 +563,14 @@ function selectCalibrationCandidates({
       Number(entry.changedNodeCount || 0) === 0)
     .sort(compareCheap)[0];
   add(baseline, "baseline");
+  const target = unique
+    .filter((entry) =>
+      entry !== baseline &&
+      !["baseline", "adjacent"].includes(entryCalibrationTier(entry)))
+    .sort(compareCheap)[0];
+  add(target, "targetSearch");
+  const selectedTarget = target && selectedByKey.get(target.canonicalKey);
+  if (selectedTarget) selectedTarget.selectionReasons.push("cheapRank");
   const near = unique
     .filter((entry) =>
       entryCalibrationTier(entry) === "adjacent")
@@ -649,6 +657,10 @@ function selectCalibrationCandidates({
       nearBaselineAvailable: near.length,
       nearBaselineIncluded: selected.filter((entry) =>
         entry.selectionReasons.includes("nearBaseline")).length,
+      targetSearchAvailable: Boolean(target),
+      targetSearchIncluded: Boolean(
+        target && selectedByKey.has(target.canonicalKey),
+      ),
     },
     cheapParetoKeys,
     selected,
@@ -1408,7 +1420,7 @@ function scorerQualityGate(
 }
 
 function representativeRealPareto(results, objectiveSet, baselineObjectives) {
-  const candidates = results
+  const measured = results
     .filter((entry) =>
       entry.status === "success" &&
       (entry.calibrationKind || entry.candidateSummary?.calibrationKind) !==
@@ -1418,13 +1430,36 @@ function representativeRealPareto(results, objectiveSet, baselineObjectives) {
       baselineObjectives,
       objectiveSet,
     ));
+  const candidates = measured.filter((entry) => {
+    let upside = 0;
+    let downside = 0;
+    for (const delta of Object.values(
+      entry.performanceObjectiveDeltas || {},
+    )) {
+      const normalized = Number(delta.directional || 0) /
+        Math.max(1, Math.abs(Number(delta.baseline || 0)));
+      if (normalized > 0) upside += normalized;
+      if (normalized < 0) downside += Math.abs(normalized);
+    }
+    return upside >= 0.01 && (downside === 0 || upside >= downside * 0.5);
+  });
   const labels = new Map();
-  function labelWinner(label, selector, why) {
-    const winner = [...candidates].sort(
-      (left, right) =>
-        selector(right) - selector(left) ||
-        left.canonicalKey.localeCompare(right.canonicalKey),
-    )[0];
+  function labelWinner(
+    label,
+    selector,
+    why,
+    pool = candidates,
+    accept = (score) => score > 0,
+  ) {
+    const ranked = [...pool]
+      .map((entry) => ({ entry, score: Number(selector(entry)) }))
+      .filter(({ score }) => Number.isFinite(score) && accept(score))
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          left.entry.canonicalKey.localeCompare(right.entry.canonicalKey),
+      );
+    const winner = ranked[0]?.entry;
     if (!winner) return;
     if (!labels.has(winner.canonicalKey)) labels.set(winner.canonicalKey, []);
     labels.get(winner.canonicalKey).push({ label, why: why(winner) });
@@ -1448,7 +1483,7 @@ function representativeRealPareto(results, objectiveSet, baselineObjectives) {
   labelWinner(
     "balanced",
     (entry) => entry.performanceUtility,
-    () => "Best aggregate measured objective delta.",
+    () => "Best positive aggregate measured objective delta.",
   );
   labelWinner(
     "tanky",
@@ -1467,14 +1502,18 @@ function representativeRealPareto(results, objectiveSet, baselineObjectives) {
       entry.objectives?.respec_cost ??
       Infinity,
     ),
-    () => "Lowest measured respec-cost alternative.",
+    () => "Lowest respec cost among candidates with a measured upside.",
+    candidates,
+    () => true,
   );
+  const experimental = candidates.filter((entry) =>
+    Number(entry.candidateSummary?.uncertainty || 0) > 0);
   labelWinner(
-    "experimental_totem",
-    (entry) =>
-      roleScore(entry, /totem|ballista|placement/i) +
-      Number(entry.candidateSummary?.uncertainty || 0) * 0.001,
-    () => "Most interesting measured Ballista/totem experiment.",
+    "experimental",
+    (entry) => entry.performanceUtility,
+    () => "Uncertain mechanic with at least one measured upside.",
+    experimental,
+    () => true,
   );
   return candidates
     .filter((entry) => labels.has(entry.canonicalKey))
@@ -2165,6 +2204,7 @@ async function evaluateSelectiveCandidates({
       realTradeoffs: diagnostics.realTradeoffs,
       noImprovementFound:
         diagnostics.realImprovements === 0 && finalGate.passed,
+      noUsefulCandidateFound: representatives.length === 0,
       confidence: adaptiveRescue.confidence,
       adaptiveRescue,
       limitationDiagnosis: diagnostics.limitationDiagnosis,

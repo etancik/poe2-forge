@@ -118,6 +118,36 @@ function verifySavedScenario(xml, expectedInput) {
   };
 }
 
+function scenarioFromValidatedBaseline(baseline, buildIdentity = {}) {
+  if (!baseline || baseline.trusted !== true) {
+    throw new Error(
+      "Exact passive evaluation requires a trusted refresh-build baseline.",
+    );
+  }
+  const baselineHash = baseline.file?.sha256;
+  const buildHash = buildIdentity?.sha256;
+  if (baselineHash && buildHash && baselineHash !== buildHash) {
+    throw new Error(
+      `Baseline build hash ${baselineHash} does not match imported build ${buildHash}.`,
+    );
+  }
+  const scenario = normalizeScenario(baseline.config);
+  const required = [
+    "enemyLevel",
+    "enemyEvasion",
+    "enemyArmour",
+    "resistancePenalty",
+    "enemyDistance",
+  ];
+  const missing = required.filter((field) => !Object.hasOwn(scenario, field));
+  if (missing.length) {
+    throw new Error(
+      `Trusted baseline is missing scenario fields: ${missing.join(", ")}.`,
+    );
+  }
+  return scenario;
+}
+
 async function applyAndVerifyScenario(client, xml, expectedInput) {
   const savedReport = verifySavedScenario(xml, expectedInput);
   if (!savedReport.valid) {
@@ -168,5 +198,6 @@ module.exports = {
   normalizeScenario,
   parseSavedScenario,
   scenarioChecks,
+  scenarioFromValidatedBaseline,
   verifySavedScenario,
 };

@@ -57,6 +57,9 @@ const {
   sha256,
   stableStringify,
 } = require("./lib/passive-optimizer/stable");
+const {
+  scenarioFromValidatedBaseline,
+} = require("./lib/passive-optimizer/scenario");
 
 const COMMANDS = [
   "validate",
@@ -533,7 +536,11 @@ function buildStageSummary(artifact, options = {}) {
       runtime: exact?.runtime || artifact.runtime || null,
     },
     counts: {
-      generated: artifact.search?.counts?.generated || 0,
+      generated:
+        artifact.search?.counts?.generated ??
+        artifact.search?.counts?.committed ??
+        artifact.search?.counts?.attempted ??
+        0,
       repaired: artifact.search?.counts?.repaired || 0,
       invalid: artifact.search?.counts?.invalid || 0,
       duplicate: artifact.search?.counts?.duplicate || 0,
@@ -621,7 +628,35 @@ function loadObjectiveSet(args) {
       : parseObjectiveSpec(args.objectiveSet);
   }
   if (args.metrics?.length) return normalizeObjectiveSet(args.metrics);
-  return normalizeObjectiveSet([]);
+  return normalizeObjectiveSet({
+    name: "passive-review-default",
+    version: 1,
+    objectives: [
+      { name: "damage", field: "TotalDPS", role: "damage", direction: "max" },
+      { name: "life", field: "Life", role: "life", direction: "max" },
+      { name: "ehp", field: "TotalEHP", role: "defense.ehp", direction: "max" },
+      {
+        name: "physical_max_hit",
+        field: "PhysicalMaximumHitTaken",
+        role: "defense.max_hit",
+        direction: "max",
+      },
+      {
+        name: "accuracy",
+        field: "AccuracyHitChance",
+        role: "accuracy",
+        direction: "max",
+        optional: true,
+      },
+      {
+        name: "respec_cost",
+        field: "respecCost",
+        source: "candidate",
+        role: "cost.respec",
+        direction: "min",
+      },
+    ],
+  });
 }
 
 function compactResult(artifact, output, limit) {
@@ -1101,7 +1136,21 @@ async function main() {
       ? args.explicit.evaluationLimit
         ? Math.max(0, Math.floor(args.evaluationLimit))
         : preset.evaluationLimit
-      : Math.max(0, Math.floor(args.pobLimit || 0));
+      : args.explicit.evaluationLimit
+        ? Math.max(0, Math.floor(args.evaluationLimit))
+        : args.baseline
+          ? 8
+          : 0;
+    const exactScenario = evaluationLimit > 0
+      ? scenarioFromValidatedBaseline(baselineMetrics, artifact.build)
+      : null;
+    if (profile.scenario) {
+      artifact.searchWarnings = [{
+        code: "PROFILE_SCENARIO_IGNORED",
+        message:
+          "Exact evaluation uses the trusted refresh-build baseline scenario.",
+      }];
+    }
     const remainingRuntimeMs = Number.isFinite(args.runtimeLimitMs)
       ? Math.max(0, args.runtimeLimitMs - (Date.now() - searchStartedAt))
       : undefined;
@@ -1126,7 +1175,7 @@ async function main() {
             resume: args.resume,
             nearBaselineCount: args.nearBaselineCount,
             minimumSample: args.minimumSample,
-            scenario: profile.scenario,
+            scenario: exactScenario,
           })
         : await evaluateCandidates({
             buildPath: args.build,
@@ -1138,7 +1187,7 @@ async function main() {
             count: evaluationLimit,
             cachePath: args.cache,
             runtimeLimitMs: remainingRuntimeMs,
-            scenario: profile.scenario,
+            scenario: exactScenario,
           });
     }
   }

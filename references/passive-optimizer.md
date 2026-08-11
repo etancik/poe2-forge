@@ -1,15 +1,25 @@
 # Passive Optimizer
 
-Use `node scripts/passive-optimizer.js --help` for commands and options. The CLI
-validates, reroutes, scores, and searches legal candidates; cheap scoring is
-triage and PoB is the exact tier.
+The CLI measures legal trees; it does not generate ideas.
 
-Use its configured hash-verified tree snapshot. Preserve connectivity, point
-budgets, required starts, ascendancy identity, sockets, attribute choices,
-selected spec, and unrelated build state. `conservative` preserves nearly all
-allocated nodes, `standard` preserves important state, and `rebuild` permits a
-larger transition only with explicit approval.
+## Broad reviews: concept first
 
-Reload the validated baseline for exact checks. Reject failed, timed-out, or
-drifted candidates, keep cheap and exact Pareto results separate, and never
-apply a candidate automatically.
+1. Refresh the build. Its trusted scenario is the sole source for exact checks.
+2. Search three angles: current builds with the main skill/ascendancy,
+   mechanic-specific discussions, and adjacent or older archetypes worth
+   revalidating.
+3. Present 4-6 concept cards: mechanic, expected tree shape, source/patch
+   status, likely gain, sacrifice, and cheapest falsification test. Never reject
+   an idea only because its patch is old or unclear.
+4. Let the user select or combine 2-3 concepts.
+5. Give each concept its own desired, forbidden, weapon, skill, and mechanic
+   tags. Search bounded permutations inside it: usually 4-12 changes or a
+   deliberate 8-20 point rebuild. Global brute force is diagnostic only.
+6. Exact-check baseline, at least one concept-sized candidate, and a nearby
+   control. Surface only measured upside with a reasonable upside/downside
+   ratio; otherwise report that none survived.
+
+Use `node scripts/passive-optimizer.js --help`. Preserve connectivity, budgets,
+starts, ascendancy, sockets, choices, and unrelated state. Exact evaluation
+ignores profile scenarios and requires a matching trusted refresh artifact.
+Cheap scores triage; PoB decides. Never apply a candidate automatically.

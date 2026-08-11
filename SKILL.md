@@ -13,8 +13,9 @@ default.
 1. Before calculated review, run `scripts/refresh-build.js`. If it returns
    `requiresInput`, ask only for Act or area level; stop on other validation
    failure.
-2. Run the smallest useful comparison. For broad discovery, browse and let the
-   user triage ideas before expensive PoB work.
+2. Run the smallest useful comparison. For broad passive reviews use the
+   concept-first flow in `passive-optimizer.md`: web hypotheses, user triage,
+   bounded permutations, then PoB. Do not use global brute force as ideation.
 3. Use `inspect-build.js` for inspection, `run-experiment.js` for variants,
    item/tree inspectors for candidates, and `passive-optimizer.js` for search.
 4. Keep the validated scenario fixed, reload the baseline, verify mutations,
@@ -31,7 +32,7 @@ coupled work here.
 
 ## Load only when needed
 
-- broad ideas: [ideation.md](references/ideation.md);
+- broad non-passive ideas: [ideation.md](references/ideation.md);
 - item replacement: [item-completion.md](references/item-completion.md);
 - custom variant spec: [experiment-spec.md](references/experiment-spec.md);
 - passive search/rebuild: [passive-optimizer.md](references/passive-optimizer.md);

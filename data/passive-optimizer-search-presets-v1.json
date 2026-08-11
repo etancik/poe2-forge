@@ -24,7 +24,7 @@
       "batchSize": 16,
       "archiveEvaluation": false,
       "evaluationFraction": 0.05,
-      "minimumEvaluations": 1,
+      "minimumEvaluations": 4,
       "resultLimit": 8,
       "diversityBucketCap": 2
     },
@@ -37,7 +37,7 @@
       "batchSize": 64,
       "archiveEvaluation": false,
       "evaluationFraction": 0.12,
-      "minimumEvaluations": 3,
+      "minimumEvaluations": 8,
       "resultLimit": 12,
       "diversityBucketCap": 3
     },
@@ -50,7 +50,7 @@
       "batchSize": 256,
       "archiveEvaluation": true,
       "evaluationFraction": 0.3,
-      "minimumEvaluations": 8,
+      "minimumEvaluations": 12,
       "resultLimit": 20,
       "diversityBucketCap": 5
     }

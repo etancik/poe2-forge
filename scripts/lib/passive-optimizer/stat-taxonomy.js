@@ -2,7 +2,7 @@
 
 const { sortedObject } = require("./stable");
 
-const STAT_TAXONOMY_VERSION = 2;
+const STAT_TAXONOMY_VERSION = 3;
 
 const RULES = [
   ["damage.global", /\b(global )?(increased|more|reduced|less) damage\b/i],
@@ -48,6 +48,9 @@ const RULES = [
   ["role.mobility", /\bmovement speed|move speed|dash|roll distance\b/i],
   ["role.totem", /\btotems?\b/i],
   ["role.crossbow", /\bcrossbow|bolt|ammo|reload\b/i],
+  ["role.bow", /\bbows?\b/i],
+  ["role.melee", /\bmelee\b/i],
+  ["role.shield", /\bshield\b/i],
   ["role.projectile", /\bprojectiles?\b/i],
   ["role.grenade", /\bgrenades?\b/i],
   ["damage.grenade", /\bgrenades?.*damage|damage.*grenades?\b/i],

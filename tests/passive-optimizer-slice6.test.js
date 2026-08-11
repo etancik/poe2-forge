@@ -378,7 +378,7 @@ test("calibration always includes baseline and near-baseline probes", () => {
   assert.equal(first.mandatory.nearBaselineIncluded, 2);
   assert.ok(first.selected.some((value) => value.cheapPruned));
   assert.ok(first.selected.some((value) =>
-    value.selectionReasons.includes("structuralRole")));
+    value.selectionReasons.includes("targetSearch")));
   assert.ok(first.selected.some((value) =>
     value.selectionReasons.includes("cheapRank")));
 });
@@ -747,7 +747,7 @@ test("representative selection emits all six build-specific roles", () => {
     "accuracy_recovery_fix",
     "balanced",
     "damage",
-    "experimental_totem",
+    "experimental",
     "low_respec",
     "tanky",
   ]);
