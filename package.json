@@ -12,7 +12,8 @@
   "scripts": {
     "audit": "node scripts/publication-scan.js",
     "help": "node scripts/poe2-forge.js --help",
-    "sync:check": "node scripts/sync-installed-skill.js --check",
+    "sync:check": "node scripts/sync-installed-skill.js --check && node tools/sync-cost-estimator.js --check",
+    "sync:apply:cost": "node tools/sync-cost-estimator.js --apply",
     "test": "node --test tests/passive-optimizer.test.js tests/passive-optimizer-slice2.test.js tests/passive-optimizer-slice3.test.js tests/passive-optimizer-slice4.test.js tests/passive-optimizer-slice5.test.js tests/passive-optimizer-slice6.test.js tests/passive-optimizer-slice7.test.js tests/passive-optimizer-slice8.test.js tests/passive-product.test.js tests/directed-passive.test.js tests/dispatcher-safety.test.js tests/inspect-tree.test.js tests/item-completion.test.js tests/packet-output.test.js tests/passive-xml-variant.test.js tests/portable-config.test.js tests/scenario-resolver.test.js tests/workflow-contract.test.js",
     "test:integration": "node --test tests/passive-optimizer.integration.test.js"
   },

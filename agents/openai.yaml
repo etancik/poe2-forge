@@ -1,4 +1,4 @@
 interface:
   display_name: "Calculator-Backed Build Optimizer"
-  short_description: "Generate and measure PoE2 build options"
-  default_prompt: "Use $calculator-backed-build-optimizer to map this PoE2 build's layers and synergies, generate meaningful alternatives, and measure the useful options."
+  short_description: "Generate, measure, and price PoE2 build options"
+  default_prompt: "Use $calculator-backed-build-optimizer to map this PoE2 build, measure every useful option, and estimate the current cost of each acquisition package."

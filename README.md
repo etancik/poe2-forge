@@ -112,7 +112,7 @@ leave them uncommitted for user review, and run:
 ```powershell
 npm test
 npm run audit
-node scripts/sync-installed-skill.js --check
+npm run sync:check
 ```
 
 After review, install the complete validated tree with explicit local runtime
@@ -127,6 +127,8 @@ node scripts/sync-installed-skill.js --apply `
 The installer validates the exact target name, stages the replacement, keeps
 or creates `config.local.json`, swaps the directory, and rolls back if the swap
 fails.
+
+The companion estimate-poe2-build-costs skill is versioned under skills/estimate-poe2-build-costs. Check both installed skills with npm run sync:check and install the companion after review with npm run sync:apply:cost.
 
 ## Safety and limitations
 

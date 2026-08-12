@@ -1,6 +1,6 @@
 ---
 name: calculator-backed-build-optimizer
-description: Review and optimize Path of Exile 2 builds using current web evidence and Path of Building. Use for progression checks, layer and synergy analysis, build ideas, upgrades, respecs, or passive, gear, gem, skill, and configuration comparisons.
+description: Review and optimize Path of Exile 2 builds using current web evidence, Path of Building, and current acquisition-cost estimates. Use for progression checks, layer and synergy analysis, build ideas, upgrades, value comparisons, respecs, or passive, gear, gem, skill, and configuration comparisons.
 ---
 
 # Calculator-Backed Build Optimizer
@@ -22,7 +22,15 @@ default.
 4. Keep the validated scenario fixed, verify legality and restoration, and
    reject drift. Use `directed` for explicit passive deltas; it preserves
    attribute choices and does not mutate the build.
-5. Keep the large-work confirmation: more than 40 variants or exhaustive work
+5. After measurement, automatically use $estimate-poe2-build-costs for every
+   legal, build-relevant candidate that requires acquiring an unowned item,
+   currency, gem, jewel, anoint, craft, or service. Include luxury and dream-tier
+   candidates; never prefilter them by expected affordability. Pass mandatory
+   properties separately from optional premium properties, plus quantities and
+   owned status. Price the batch from one current snapshot and keep PoB effect,
+   market cost, and price confidence separate. Skip only invalid, unmeasured,
+   configuration-only, or fully owned no-new-cost candidates.
+6. Keep the large-work confirmation: more than 40 variants or exhaustive work
    requires explicit user approval. Never change a saved build without separate
    approval.
 

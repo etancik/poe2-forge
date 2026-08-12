@@ -21,5 +21,10 @@ goal.
 
 Present 6-8 distinct concept cards with the exact layer change, affected
 dependencies, stranded investment, replacement package, source/status,
-playstyle/cost/respec impact, main uncertainty, and smallest useful test. Let
-the user select or combine 2-4 cards before expensive measurement.
+playstyle/market-cost/respec impact, main uncertainty, and smallest useful test.
+Use $estimate-poe2-build-costs for every card whose acquisition package is
+specific enough to price. Do not discard expensive or dream-tier cards; expose
+their price, range, and confidence. Mark underspecified components as unpriced
+instead of assuming zero. Let the user select or combine 2-4 cards before
+expensive measurement, then refresh prices for every legal measured candidate
+that is surfaced.
