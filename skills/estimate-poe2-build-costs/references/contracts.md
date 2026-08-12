@@ -1,110 +1,143 @@
 # Integration contracts
 
-## Proposed-change input
+## Alternative-candidate batch input
 
-Accept prose or normalize another skill's output to:
+Use one batch for mutually exclusive build candidates:
 
 ~~~json
 {
-  "game": "poe2",
-  "trade_realm": "poe2",
-  "league": "dynamically discovered current challenge league",
-  "source_locale": "us",
-  "changes": [
+  "snapshot": {
+    "game": "poe2",
+    "trade_realm": "poe2",
+    "source_locale": "us",
+    "quote": "Exalted Orb"
+  },
+  "approved": false,
+  "candidates": [
     {
-      "action": "add|replace|craft|anoint|respec",
-      "name": "exact item or change name",
-      "quantity": 1,
-      "mandatory": ["properties required for the measured benefit"],
-      "optional": ["nice-to-have properties"],
-      "owned": 0
+      "candidate_id": "stable-id",
+      "label": "human label",
+      "requirements": [
+        {
+          "action": "add|replace|craft|anoint|respec",
+          "name": "exact item or service",
+          "quantity": 1,
+          "owned": 0,
+          "pricing": "exchange|observed|manual|none",
+          "mandatory": ["properties required for measured benefit"],
+          "optional": ["premium properties"]
+        }
+      ]
     }
   ]
 }
 ~~~
 
-Omit 'league' to discover the current softcore challenge league at quote time.
-An explicit league is an override, not a persistent default. Treat
-'source_market' and 'source_league_scope' as observed output metadata, not
-caller assertions. Preserve the build
-optimizer's exact minimum requirements. Do not silently add premium rolls or
-optional affixes.
+Omit `snapshot.league` to discover the current softcore challenge league at
+quote time. An explicit league is an override, never a persistent default.
+`source_market` and `source_league_scope` are observed output metadata, not
+caller assertions.
 
-## Acquisition optimizer example
+Pricing modes:
 
-Pass a JSON file to 'scripts/optimize_acquisition.py --input <file> --pretty':
+- `exchange`: let `poe2-costs.py batch` fetch a current PoE2DB quote;
+- `observed`: aggregate already researched current evidence; include
+  `unit_price`, optional `[low, high]` `range`, `confidence`, `source`, and its
+  observed market metadata;
+- `manual`: keep the component explicitly unpriced pending listing/craft work;
+- `none`: no trade acquisition cost, such as a passive-only change.
+
+`quantity - owned` is the net requirement. Unknown or manual components make a
+candidate total `null`; they never become zero. More than 40 candidates or
+distinct automatic exchange queries requires `approved: true`.
+
+Run:
+
+~~~text
+python scripts/poe2-costs.py batch --input batch.json --output costs.json
+python scripts/poe2-costs.py report --input costs.json --candidate stable-id
+~~~
+
+Both default to bounded packet output. Use `--stdout-mode silent` for chaining
+or `debug` only when diagnosing a specific failure. Output artifacts must remain
+below the current working directory.
+
+## Batch result
+
+The full machine-only artifact keeps shared snapshot metadata and candidate
+results separately:
+
+~~~json
+{
+  "kind": "cost_batch",
+  "as_of": "ISO-8601 timestamp",
+  "snapshot": {
+    "game": "poe2",
+    "trade_realm": "poe2",
+    "league": "current or explicit league",
+    "league_attribution": "official_current_trade_league|explicit_override|not_queried_no_market_acquisition",
+    "league_source": "URL or null",
+    "source_market": "US Realm Economy or null",
+    "source_locale": "us",
+    "source_league_scope": "not_explicitly_labeled or null",
+    "quote": "Exalted Orb"
+  },
+  "candidates": [
+    {
+      "candidate_id": "stable-id",
+      "priced_subtotal": 0,
+      "direct_total": 0,
+      "range": [0, 0],
+      "confidence": "high|medium|low|unknown",
+      "requirements": [],
+      "unpriced": []
+    }
+  ],
+  "sources": []
+}
+~~~
+
+The calling build skill retains its calculator delta beside `candidate_id` and
+joins only the compact total, range, confidence, and unpriced count. Never let
+market confidence modify calculator metrics or exact PoB metrics imply exact
+market prices.
+
+## Deterministic acquisition optimizer
+
+Pass verified item-specific recipes to `poe2-costs.py optimize`:
 
 ~~~json
 {
   "quote": "Exalted Orb",
-  "requirements": {
-    "Concentrated Liquid Isolation": 1,
-    "Concentrated Liquid Suffering": 1,
-    "Concentrated Liquid Fear": 1
-  },
-  "prices": {
-    "Concentrated Liquid Isolation": 223,
-    "Concentrated Liquid Suffering": 47.4,
-    "Concentrated Liquid Fear": 13.2
-  },
+  "requirements": {"Target": 1},
+  "prices": {"Target": 100, "Input": 20},
   "recipes": [
     {
-      "name": "Fear to Suffering",
-      "inputs": {"Concentrated Liquid Fear": 3},
-      "outputs": {"Concentrated Liquid Suffering": 1}
-    },
-    {
-      "name": "Suffering to Isolation",
-      "inputs": {"Concentrated Liquid Suffering": 3},
-      "outputs": {"Concentrated Liquid Isolation": 1}
+      "name": "Verified conversion",
+      "inputs": {"Input": 3},
+      "outputs": {"Target": 1}
     }
   ]
 }
 ~~~
 
-Recipes are discrete. The optimizer rounds recipe batches upward and returns a
-conservative plan; it does not currently reuse incidental excess output across
-separate requirements.
+Recipes are discrete and rounded upward. Populate them only from current
+evidence for the exact item family and version. An empty list is normal. The
+optimizer does not reuse incidental excess output across separate requirements.
 
-This is an item-specific example for the listed emotions, not a general 3:1
-rule. Populate 'recipes' only from current evidence for the exact item family
-and game version. An empty recipe list is normal; in that case retain direct
-pricing and do not invent an alternative path.
+## Compact handoff
 
-## Result handoff
+Return only:
 
-The calling build skill should retain:
+- snapshot timestamp, league, market, and quote;
+- per-candidate total, range, confidence, and unpriced count;
+- dominant uncertainty and exact next acquisition steps;
+- artifact path for later bounded `report` queries.
 
-- measured build delta from its calculator;
-- 'optimized_total', 'range', and 'confidence' from this skill;
-- benefit-per-cost only when both sides share the same scenario and the price
-  evidence is current;
-- an 'unpriced' list so unknown components never become implicit zeroes.
+Do not copy full listings, raw HTML, or the full artifact into the calling task.
 
-Never let market confidence alter calculator metrics. Never let exact
-calculator metrics imply exact market prices.
+## Screenshot-choice extension
 
-## Screenshot-choice result
-
-For a photographed choice screen, add:
-
-~~~json
-{
-  "image_reading_confidence": "high",
-  "choice_ranking": [
-    {
-      "rank": 1,
-      "visible_text": "exact transcription",
-      "value": 0,
-      "range": [0, 0],
-      "liquidity": "high|medium|low|unknown",
-      "price_confidence": "high|medium|low|unknown",
-      "reason": "short recommendation basis"
-    }
-  ]
-}
-~~~
-
-Preserve image-reading confidence separately from market-price confidence. A
-clear screenshot can still contain a low-confidence market, and a liquid market
-does not repair an ambiguous screenshot transcription.
+For a photographed choice add `choice_ranking` entries with rank, exact visible
+text, value/range, liquidity, price confidence, and short reason. Preserve
+`image_reading_confidence` separately from market confidence.

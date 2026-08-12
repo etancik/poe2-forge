@@ -1,4 +1,4 @@
 interface:
   display_name: "PoE2 Build Cost Estimator"
   short_description: "Price PoE2 build changes and pictured choices"
-  default_prompt: "Use $estimate-poe2-build-costs to price proposed build changes or rank the options visible in this screenshot."
+  default_prompt: "Use $estimate-poe2-build-costs to price alternative PoE2 build candidates in one current market snapshot and return a compact comparison packet."

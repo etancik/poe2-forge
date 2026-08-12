@@ -106,8 +106,8 @@ archives separate.
 
 ## Development and review
 
-`AGENTS.md` defines the repository workflow. Make changes on a local branch,
-leave them uncommitted for user review, and run:
+`AGENTS.md` defines the repository workflow. Work directly on `main`, leave
+changes uncommitted for user review, and run:
 
 ```powershell
 npm test

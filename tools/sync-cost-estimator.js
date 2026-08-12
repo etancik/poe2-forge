@@ -21,11 +21,7 @@ function parseArgs(argv) {
     if (arg === "--check") args.mode = "check";
     else if (arg === "--apply") args.mode = "apply";
     else if (arg === "--target") args.target = path.resolve(argv[++index]);
-    else if (arg === "--runtime-manifest") {
-      args.runtimeManifest = path.resolve(argv[++index]);
-    } else if (arg === "--tree-snapshot") {
-      args.treeSnapshot = path.resolve(argv[++index]);
-    } else throw new Error(`Unknown argument: ${arg}`);
+    else throw new Error(`Unknown argument: ${arg}`);
   }
   args.target ||= path.join(os.homedir(), ".codex", "skills", SKILL_NAME);
   if (path.basename(args.target).toLowerCase() !== SKILL_NAME) {
@@ -37,10 +33,7 @@ function parseArgs(argv) {
 }
 
 function hash(file) {
-  return crypto
-    .createHash("sha256")
-    .update(fs.readFileSync(file))
-    .digest("hex");
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 }
 
 function walk(root, relative = "") {
@@ -57,7 +50,9 @@ function sourceFiles() {
   if (!fs.existsSync(SOURCE_ROOT)) {
     throw new Error("Companion skill source not found: " + SOURCE_ROOT);
   }
-  return walk(SOURCE_ROOT).filter((file) => !file.endsWith(".stage-original"));
+  return walk(SOURCE_ROOT).filter(
+    (file) => !file.endsWith(".stage-original") && !file.includes("/__pycache__/"),
+  );
 }
 
 function compare(target) {
@@ -74,7 +69,8 @@ function compare(target) {
   const extra = targetFiles.filter(
     (file) =>
       !expected.has(file) &&
-      !PRESERVED_TARGET_FILES.has(file.replaceAll("\\", "/")),
+      !PRESERVED_TARGET_FILES.has(file.replaceAll("\\", "/")) &&
+      !file.includes("/__pycache__/"),
   );
   return { clean: !missing.length && !changed.length && !extra.length, missing, changed, extra };
 }
@@ -93,6 +89,10 @@ function apply(args) {
       const destination = path.join(stage, file);
       fs.mkdirSync(path.dirname(destination), { recursive: true });
       fs.copyFileSync(path.join(SOURCE_ROOT, file), destination);
+    }
+    const existingConfig = path.join(args.target, "config.local.json");
+    if (fs.existsSync(existingConfig)) {
+      fs.copyFileSync(existingConfig, path.join(stage, "config.local.json"));
     }
     fs.writeFileSync(
       path.join(stage, ".install-manifest.json"),
@@ -138,4 +138,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { compare, parseArgs, sourceFiles };
+module.exports = { apply, compare, parseArgs, sourceFiles };

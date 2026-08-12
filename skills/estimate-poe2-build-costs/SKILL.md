@@ -5,104 +5,52 @@ description: Estimate the current acquisition cost of proposed Path of Exile 2 b
 
 # Estimate PoE2 Build Costs
 
-Estimate what a proposed build change costs now. Keep calculator effects and
-market estimates separate: this skill prices a change; it does not claim that
-the change improves the build.
+Price changes; do not claim they improve a build. Keep calculator effects and
+market uncertainty separate.
 
 ## Workflow
 
-1. Normalize the proposal into net requirements: item or service, quantity,
-   exact variant or required mods, and whether the character already owns it.
-   Price additions only. Do not credit replaced-item sales unless the user asks;
-   if asked, show gross cost and discounted sale credit separately.
-2. Identify the market and league separately. Default to the current softcore
-   PoE2 trade challenge league discovered from the official trade-league
-   endpoint; never hardcode a temporary league name. Use an explicit league only
-   when the user requests one or automatic discovery is ambiguous. Treat every
-   quoted price as time-sensitive.
-3. Select evidence:
-   - Currency Exchange items: current 24-hour PoE2DB/official exchange data.
-   - Fixed uniques, gems, and bases: current economy data when available;
-     otherwise sample comparable current listings.
-   - Rare items: search by the minimum build-enabling mods, then bracket the
-     price. Never present one exact listing as a stable market price.
-   - Crafts: price ingredients plus expected attempts and state the probability
-     assumptions. Keep deterministic and probabilistic costs separate.
-   - Passive changes: trade cost is zero; report known respec/gold requirements
-     separately or mark them unknown.
-4. Browse or query fresh sources during every estimate. Do not reuse an older
-   conversation quote as current data. Record source, realm/league, quote time,
-   volume or sample size, and price basis.
-5. For PoE2DB-listed exchange items, run
-   'python scripts/fetch_poe2db_price.py --item "<name>" --quote "Exalted Orb"'.
-   Use a supplied PoE2DB URL with '--url' when name-to-slug conversion is
-   ambiguous.
-6. Price direct acquisition first. Then inspect only alternatives verified for
-   the exact item and current game version: a vendor recipe, reforge, lower-tier
-   upgrade, deterministic craft, or finished-item purchase. Never infer a recipe,
-   input combination, or ratio from another item family. Omit alternatives when
-   current evidence is absent. For a verified deterministic recipe bundle, use
-   'scripts/optimize_acquisition.py'; read
-   [references/contracts.md](references/contracts.md) for its input.
-7. Normalize totals to Exalted Orbs and also Divine Orbs when a liquid current
-   conversion exists. Prefer the highest-volume direct pair. Avoid chaining
-   conversions when a direct pair exists.
-8. Assign confidence per component: 'high' for liquid direct exchange data,
-   'medium' for a coherent listing sample or deterministic recipe, 'low' for
-   sparse listings or modeled crafting, and 'unknown' when evidence is absent.
-9. Return the compact contract below. Lead with the cheapest feasible total,
-   then direct-buy total, savings, dominant uncertainty, and exact shopping or
-   crafting steps.
+1. Normalize alternatives into the batch contract in `references/contracts.md`.
+   Preserve candidate IDs, net quantities, owned status, and mandatory versus
+   optional properties. Never sum mutually exclusive candidates together.
+2. If every requirement is owned, configuration-only, passive-only, or otherwise
+   trade-zero, report zero trade acquisition cost and any known local respec cost
+   without browsing.
+3. For market work, resolve the current softcore PoE2 challenge league from the
+   official trade endpoint unless the user explicitly requests another league.
+   Never hardcode a temporary league name. Treat market, locale, league, and
+   their evidence as separate fields.
+4. Price all surfaced alternatives once from one current snapshot. Deduplicate
+   shared requirements across candidates. Use `scripts/poe2-costs.py batch` for
+   exchange items and final aggregation. Search fixed items, rare minimum specs,
+   and crafts once per distinct requirement, then pass their evidence as
+   `observed`; leave unsupported components `manual`/unpriced, never implicit
+   zero.
+5. Price direct acquisition first. Check only alternatives verified for the
+   exact item and current version. For a deterministic recipe, run
+   `scripts/poe2-costs.py optimize`; never infer family recipes or ratios.
+6. Keep expensive and dream-tier candidates. Assign confidence per component,
+   normalize totals to Exalted Orbs and Divine Orbs when a liquid direct pair
+   exists, and avoid false precision.
+7. Return a short human comparison plus one compact machine packet. Lead with
+   feasible totals, dominant uncertainty, and shopping/crafting steps.
 
-## Screenshot choice workflow
+Use `packet` by default, `silent` for chaining, and `debug` only for a specific
+failure. **Raw artifacts are machine-only; never open a full artifact.** Use
+`poe2-costs.py report --candidate <id>`.
 
-1. Inspect the supplied image and transcribe every visible option before pricing.
-   Capture exact names, quantities, tiers, modifiers, restrictions, and icons that
-   disambiguate variants. Do not infer obscured text.
-2. If a decisive field is unreadable, give a conditional ranking when possible.
-   Ask for a closer crop or clearer photo only when the ambiguity can change the
-   recommendation.
-3. Price all choices from a consistent current snapshot. For a guaranteed
-   tradeable result, use its buy-now value. For a random reward, report expected
-   value and range separately from the best-case result. For an untradeable
-   result, price only defensible downstream tradeable rewards.
-4. Rank by realistic net sale value, not the highest visible listing. Include
-   liquidity, likely selling friction, and confidence. Keep personal build value
-   as a separate ranking when the user's build makes it relevant.
-5. Lead with the recommended pictured choice and the margin over second place.
-   When the margin is smaller than price uncertainty, call the choices tied.
+For source selection read [sources.md](references/sources.md). For batch, result,
+and handoff schemas read [contracts.md](references/contracts.md).
 
-## Output contract
+## Screenshot choices
 
-Return both human-readable results and a compact machine-readable block:
+Transcribe every visible option before pricing. Ask for a clearer crop only when
+an unreadable field can change the ranking. Price all options in one snapshot;
+separate guaranteed value, expected value, liquidity, image confidence, and
+market confidence. Call overlapping ranges tied.
 
-~~~json
-{
-  "as_of": "ISO-8601 timestamp",
-  "game": "poe2",
-  "trade_realm": "poe2",
-  "league": "dynamically discovered current challenge league",
-  "league_attribution": "official_current_trade_league|explicit_override",
-  "league_source": "URL or null",
-  "source_market": "US Realm Economy",
-  "source_locale": "us",
-  "source_league_scope": "not_explicitly_labeled",
-  "quote": "Exalted Orb",
-  "direct_total": 0,
-  "optimized_total": 0,
-  "range": [0, 0],
-  "confidence": "high|medium|low|unknown",
-  "requirements": [],
-  "acquisition_plan": [],
-  "choice_ranking": [],
-  "image_reading_confidence": "high|medium|low|not_applicable",
-  "unpriced": [],
-  "sources": []
-}
-~~~
+## Handoff
 
-Omit false precision: round liquid totals sensibly and widen the range for rare
-gear, low volume, or crafting variance. Read
-[references/sources.md](references/sources.md) when choosing or interpreting a
-source, and [references/contracts.md](references/contracts.md) when another
-skill will consume the result.
+Use another task for substantial listing or crafting research. Pass only the
+normalized batch contract and request a compact packet; keep full listings and
+artifacts in that task.

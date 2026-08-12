@@ -5,53 +5,48 @@ description: Review and optimize Path of Exile 2 builds using current web eviden
 
 # Calculator-Backed Build Optimizer
 
-Measure claims in PoB. Do not trust saved scenarios or community DPS by
-default.
+Measure claims in PoB. Do not trust saved scenarios or community DPS by default.
 
 ## Workflow
 
-1. Use `scripts/poe2-forge.js` for every routine local operation. Its default
-   `packet` output is bounded; use `silent` for machine chaining and `debug`
-   only for a specific reporting failure.
-2. Before calculated review, run its `refresh` command. If it returns
-   `requiresInput`, ask only for Act or area level. Keep this confirmation near
-   progression boundaries.
-3. Run the smallest useful comparison. For idea requests or material rebuilds,
-   map build layers with `build-layers.md`, then search for concept-sized
-   replacements. Do not use global brute force as ideation.
-4. Keep the validated scenario fixed, verify legality and restoration, and
-   reject drift. Use `directed` for explicit passive deltas; it preserves
-   attribute choices and does not mutate the build.
-5. After measurement, automatically use $estimate-poe2-build-costs for every
-   legal, build-relevant candidate that requires acquiring an unowned item,
-   currency, gem, jewel, anoint, craft, or service. Include luxury and dream-tier
-   candidates; never prefilter them by expected affordability. Pass mandatory
-   properties separately from optional premium properties, plus quantities and
-   owned status. Price the batch from one current snapshot and keep PoB effect,
-   market cost, and price confidence separate. Skip only invalid, unmeasured,
-   configuration-only, or fully owned no-new-cost candidates.
-6. Keep the large-work confirmation: more than 40 variants or exhaustive work
-   requires explicit user approval. Never change a saved build without separate
-   approval.
+1. Use `scripts/poe2-forge.js` for routine local work. Default to bounded
+   `packet`; use `silent` for chaining and `debug` only for a specific failure.
+2. Run `refresh` before calculated review. If it returns `requiresInput`, ask
+   only for Act or area level near a progression boundary.
+3. For ideas or material rebuilds, map build layers, search concept-sized
+   replacements, and show acquisition footprints. Do not use global brute force
+   as ideation or run detailed pricing before shared triage.
+4. Let the user select or combine promising concepts, then run the smallest
+   useful comparisons. Keep the scenario fixed, verify legality/restoration,
+   reject drift, and use `directed` for explicit passive deltas.
+5. Collect every legal measured candidate worth surfacing into one alternative
+   batch for $estimate-poe2-build-costs. Preserve candidate IDs, mandatory versus
+   optional properties, quantities, and owned status. Include luxury and
+   dream-tier options; price must inform ranking, not prefilter ideas. Skip
+   invalid, unmeasured, configuration-only, passive-only trade-zero, and fully
+   owned no-new-cost candidates. Do not price the same concept both before and
+   after measurement.
+6. Keep PoB effect, market cost, and price confidence separate. Require approval
+   for more than 40 variants or exhaustive work. Never change a saved build
+   without separate approval.
 
-**Raw artifacts are machine-only. Never open a full artifact!** Query a bounded
-packet or one candidate through `passive report`. Full files may contain
-millions of tokens even though they cost no context while left on disk.
+**Raw artifacts are machine-only. Never open a full artifact!** Query bounded
+packets or one candidate through a report command.
 
 ## Handoff
 
-Offer a handoff to another task when a separable subtask would consume
-substantial research, calculator output, or context here. Pass only required
-inputs and request a compact result packet. Keep small, interactive, or tightly
-coupled work here.
+Offer another task when separable market research, calculation, or output would
+consume substantial context here. Pass only candidate IDs and normalized
+requirements; request one compact result packet. Keep tightly coupled or
+interactive work here.
 
 ## Load only when needed
 
 - broad non-passive ideas: [ideation.md](references/ideation.md);
 - build layers or material rebuilds: [build-layers.md](references/build-layers.md);
 - item replacement: [item-completion.md](references/item-completion.md);
-- custom or directed variants: [experiment-spec.md](references/experiment-spec.md);
-- passive search/rebuild: [passive-optimizer.md](references/passive-optimizer.md);
+- custom variants: [experiment-spec.md](references/experiment-spec.md);
+- passive work: [passive-optimizer.md](references/passive-optimizer.md);
 - scenario diagnosis: [poe2-scenarios.md](references/poe2-scenarios.md);
 - mechanic ambiguity: [guardrails.md](references/guardrails.md).
 
