@@ -20,6 +20,28 @@ Prefer a direct Exalted or Divine pair with meaningful 24-hour volume. If two
 pairs disagree, report the liquid pair and mention the spread instead of
 silently averaging them.
 
+Resolve the current softcore challenge league from
+'https://www.pathofexile.com/api/trade2/data/leagues'. Select the single
+non-permanent, non-hardcore entry whose official realm is 'poe2'. If discovery
+is empty or ambiguous, require an explicit league instead of guessing. A league
+name is temporary data and must never be a code default.
+
+Keep these identifiers separate:
+
+- 'trade_realm': the official GGG game realm, currently 'poe2';
+- 'league': the current or explicitly requested league name;
+- 'source_market': the market label printed by the price source, such as
+  'US Realm Economy';
+- 'source_locale': the PoE2DB URL language prefix, such as 'us' or 'fr'.
+
+PoE2DB locale and market are not equivalent: both '/us/Economy' and
+'/fr/Economy' may display 'US Realm Economy', while '/tw/Economy' displays a
+different market. Read the market label from the page; do not derive it from the
+URL locale.
+Current-league discovery establishes the requested market context;
+it does not prove that a PoE2DB price panel is league-labelled. Record
+'source_league_scope' as 'not_explicitly_labeled' unless the source says more.
+
 ## Fixed items
 
 Use a current economy page when it identifies the exact unique, gem, base, or
@@ -56,6 +78,7 @@ ingredient cost per attempt and leave total expected cost unpriced.
 - Unknown: no defensible observable evidence.
 
 Always retain the retrieval timestamp and URLs used.
+
 ## Screenshots and photographed choices
 
 Treat the image as evidence of what choices exist, not as price evidence.

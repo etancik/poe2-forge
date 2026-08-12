@@ -15,8 +15,11 @@ the change improves the build.
    exact variant or required mods, and whether the character already owns it.
    Price additions only. Do not credit replaced-item sales unless the user asks;
    if asked, show gross cost and discounted sale credit separately.
-2. Identify realm and league when they affect price. Default to the current PoE2
-   PC challenge league and say so. Treat every quoted price as time-sensitive.
+2. Identify the market and league separately. Default to the current softcore
+   PoE2 trade challenge league discovered from the official trade-league
+   endpoint; never hardcode a temporary league name. Use an explicit league only
+   when the user requests one or automatic discovery is ambiguous. Treat every
+   quoted price as time-sensitive.
 3. Select evidence:
    - Currency Exchange items: current 24-hour PoE2DB/official exchange data.
    - Fixed uniques, gems, and bases: current economy data when available;
@@ -31,7 +34,7 @@ the change improves the build.
    conversation quote as current data. Record source, realm/league, quote time,
    volume or sample size, and price basis.
 5. For PoE2DB-listed exchange items, run
-   'python scripts/fetch_poe2db_price.py --item "<name>" --quote "Exalted Orb" --pretty'.
+   'python scripts/fetch_poe2db_price.py --item "<name>" --quote "Exalted Orb"'.
    Use a supplied PoE2DB URL with '--url' when name-to-slug conversion is
    ambiguous.
 6. Price direct acquisition first. Then inspect only alternatives verified for
@@ -76,8 +79,14 @@ Return both human-readable results and a compact machine-readable block:
 ~~~json
 {
   "as_of": "ISO-8601 timestamp",
-  "realm": "US",
-  "league": "current PoE2 challenge league",
+  "game": "poe2",
+  "trade_realm": "poe2",
+  "league": "dynamically discovered current challenge league",
+  "league_attribution": "official_current_trade_league|explicit_override",
+  "league_source": "URL or null",
+  "source_market": "US Realm Economy",
+  "source_locale": "us",
+  "source_league_scope": "not_explicitly_labeled",
   "quote": "Exalted Orb",
   "direct_total": 0,
   "optimized_total": 0,

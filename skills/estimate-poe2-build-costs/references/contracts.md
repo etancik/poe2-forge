@@ -6,8 +6,10 @@ Accept prose or normalize another skill's output to:
 
 ~~~json
 {
-  "realm": "US",
-  "league": "current PoE2 challenge league",
+  "game": "poe2",
+  "trade_realm": "poe2",
+  "league": "dynamically discovered current challenge league",
+  "source_locale": "us",
   "changes": [
     {
       "action": "add|replace|craft|anoint|respec",
@@ -21,8 +23,12 @@ Accept prose or normalize another skill's output to:
 }
 ~~~
 
-Preserve the build optimizer's exact minimum requirements. Do not silently add
-premium rolls or optional affixes.
+Omit 'league' to discover the current softcore challenge league at quote time.
+An explicit league is an override, not a persistent default. Treat
+'source_market' and 'source_league_scope' as observed output metadata, not
+caller assertions. Preserve the build
+optimizer's exact minimum requirements. Do not silently add premium rolls or
+optional affixes.
 
 ## Acquisition optimizer example
 
@@ -77,6 +83,7 @@ The calling build skill should retain:
 
 Never let market confidence alter calculator metrics. Never let exact
 calculator metrics imply exact market prices.
+
 ## Screenshot-choice result
 
 For a photographed choice screen, add:
