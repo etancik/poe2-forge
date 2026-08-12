@@ -3,6 +3,10 @@
 Use for broad non-passive reviews or new directions. For passive-tree work load
 `passive-optimizer.md` instead.
 
+First map the current build with `build-layers.md`. Search for replacements of
+whole layers or new connections between layers, not an unstructured list of
+isolated upgrades.
+
 Search several independent angles: current builds sharing the primary skill;
 mechanic-specific discussions and patch notes; adjacent ascendancies or skills
 that use the same scaling; and older examples worth translating. Record URL,
@@ -15,7 +19,7 @@ unknown version is a verification task, never an automatic rejection. Discard
 only duplicates, proven impossible dependencies, or ideas unrelated to the
 goal.
 
-Present 6-8 distinct concept cards with the exact replacement, fit,
-source/status, playstyle/cost/respec impact, main uncertainty, and smallest
-useful test. Let the user select or combine 2-4 cards before expensive
-measurement.
+Present 6-8 distinct concept cards with the exact layer change, affected
+dependencies, stranded investment, replacement package, source/status,
+playstyle/cost/respec impact, main uncertainty, and smallest useful test. Let
+the user select or combine 2-4 cards before expensive measurement.
