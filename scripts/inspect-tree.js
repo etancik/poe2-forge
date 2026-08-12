@@ -5,6 +5,17 @@ const fs = require("fs");
 const path = require("path");
 const { resolveRuntime } = require("./lib/pob-client");
 
+const HELP = `Usage: inspect-tree.js --baseline ARTIFACT [options]
+
+Options:
+  --pattern REGEX
+  --max-cost N
+  --top N
+  --output FILE
+  --current-runtime MANIFEST
+  --full-stdout
+  --quiet`;
+
 function parseArgs(argv) {
   const args = {
     pattern:
@@ -12,6 +23,7 @@ function parseArgs(argv) {
     maxCost: 6,
     top: 6,
   };
+  if (argv.includes("--help") || argv.includes("-h")) return { ...args, help: true };
   for (let index = 2; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--baseline") args.baseline = path.resolve(argv[++index]);
@@ -28,20 +40,30 @@ function parseArgs(argv) {
   return args;
 }
 
+function unlockAvailable(node, current, ascendancyName) {
+  const constraint = node?.unlockConstraint;
+  if (!constraint) return true;
+  const requiredAscendancy = String(constraint.ascendancy || "")
+    .trim().toLowerCase();
+  const activeAscendancy = String(ascendancyName || "").trim().toLowerCase();
+  if (requiredAscendancy && requiredAscendancy !== activeAscendancy) return false;
+  return (constraint.nodes || []).every((nodeId) => current.has(Number(nodeId)));
+}
+
 function main() {
   const args = parseArgs(process.argv);
+  if (args.help) {
+    process.stdout.write(`${HELP}\n`);
+    return;
+  }
   const baseline = JSON.parse(fs.readFileSync(args.baseline, "utf8"));
   const runtime = resolveRuntime(args.currentRuntime);
   const treeVersion = baseline.tree?.treeVersion;
   if (!treeVersion) throw new Error("Baseline has no tree version");
-  const treeFile = path.join(
-    runtime.runtime,
-    "TreeData",
-    treeVersion,
-    "tree.json",
-  );
+  const treeFile = path.join(runtime.runtime, "TreeData", treeVersion, "tree.json");
   const tree = JSON.parse(fs.readFileSync(treeFile, "utf8"));
   const current = new Set((baseline.tree.nodes || []).map(Number));
+  const ascendancyName = baseline.info?.ascendClassName;
   const nodes = new Map(
     Object.entries(tree.nodes).map(([id, node]) => [Number(id), node]),
   );
@@ -55,6 +77,9 @@ function main() {
       adjacency.get(next).add(id);
     }
   }
+  const eligible = (node) =>
+    node && !node.ascendancyName && !node.isOnlyImage &&
+    unlockAvailable(node, current, ascendancyName);
   const shortestPath = (target) => {
     if (current.has(target)) return [];
     const queue = [...current];
@@ -65,7 +90,7 @@ function main() {
       for (const next of adjacency.get(id) || []) {
         if (seen.has(next)) continue;
         const node = nodes.get(next);
-        if (!node || node.ascendancyName || node.isOnlyImage) continue;
+        if (!eligible(node)) continue;
         seen.add(next);
         previous.set(next, id);
         if (next === target) {
@@ -84,10 +109,15 @@ function main() {
   };
   const regex = new RegExp(args.pattern, "i");
   const candidates = [];
+  let lockedCandidates = 0;
   for (const [id, node] of nodes) {
     if (current.has(id) || node.ascendancyName || node.isOnlyImage) continue;
     const text = `${node.name || ""}\n${(node.stats || []).join("\n")}`;
     if (!regex.test(text)) continue;
+    if (!unlockAvailable(node, current, ascendancyName)) {
+      lockedCandidates += 1;
+      continue;
+    }
     const route = shortestPath(id);
     if (!route || route.length > args.maxCost) continue;
     candidates.push({
@@ -113,9 +143,7 @@ function main() {
   const leaves = [...current]
     .map((id) => {
       const node = nodes.get(id);
-      const degree = [...(adjacency.get(id) || [])].filter((next) =>
-        current.has(next),
-      ).length;
+      const degree = [...(adjacency.get(id) || [])].filter((next) => current.has(next)).length;
       return {
         id,
         name: node?.name,
@@ -137,6 +165,7 @@ function main() {
     currentNodeCount: current.size,
     pattern: args.pattern,
     maxCost: args.maxCost,
+    lockedCandidates,
     leaves,
     candidates,
   };
@@ -162,6 +191,7 @@ function main() {
             notable: candidate.notable,
             stats: candidate.stats.join(" | "),
           })),
+          lockedCandidates,
           omittedCandidates: Math.max(0, candidates.length - args.top),
           output: args.output ? path.basename(args.output) : null,
         };
@@ -169,9 +199,13 @@ function main() {
   }
 }
 
-try {
-  main();
-} catch (error) {
-  process.stderr.write(`${error.stack || error.message}\n`);
-  process.exitCode = 1;
+if (require.main === module) {
+  try {
+    main();
+  } catch (error) {
+    process.stderr.write(`${error.stack || error.message}\n`);
+    process.exitCode = 1;
+  }
 }
+
+module.exports = { parseArgs, unlockAvailable };

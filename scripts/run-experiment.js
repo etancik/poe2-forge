@@ -234,6 +234,7 @@ async function main() {
     const ready = await client.ready();
     await client.loadBuild(buildPath, spec.xmlScenario);
     await applyActions(client, spec.scenarioActions, []);
+    await client.call("set_config", expected);
     const baseline = await snapshot(client, spec.metrics, sections);
     const scenarioValidation = ensureScenario(expected, baseline.config, "baseline");
 
@@ -242,6 +243,7 @@ async function main() {
       await client.loadBuild(buildPath, spec.xmlScenario);
       const actionLog = [];
       await applyActions(client, spec.scenarioActions, actionLog);
+      await client.call("set_config", expected);
       await applyActions(client, variant.actions, actionLog);
       const measured = await snapshot(client, spec.metrics, sections);
       const variantScenario = ensureScenario(

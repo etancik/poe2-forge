@@ -5,23 +5,30 @@ description: Review and optimize Path of Exile 2 builds using current web eviden
 
 # Calculator-Backed Build Optimizer
 
-Measure claims in PoB. Do not trust a saved scenario or community DPS by
+Measure claims in PoB. Do not trust saved scenarios or community DPS by
 default.
 
 ## Workflow
 
-1. Before calculated review, run `scripts/refresh-build.js`. If it returns
-   `requiresInput`, ask only for Act or area level; stop on other validation
-   failure.
-2. Run the smallest useful comparison. For idea requests or material rebuilds,
-   map build layers and dependencies with `build-layers.md`, then search for
-   concept-sized replacements. Do not use global brute force as ideation.
-3. Use `inspect-build.js` for inspection, `run-experiment.js` for variants,
-   item/tree inspectors for candidates, and `passive-optimizer.js` for search.
-4. Keep the validated scenario fixed, reload the baseline, verify mutations,
-   and reject drift. Never change a saved build without separate approval.
-5. Keep full artifacts on disk and consume compact stdout. Report the change,
-   measured delta or evidence status, tradeoff, and uncertainty.
+1. Use `scripts/poe2-forge.js` for every routine local operation. Its default
+   `packet` output is bounded; use `silent` for machine chaining and `debug`
+   only for a specific reporting failure.
+2. Before calculated review, run its `refresh` command. If it returns
+   `requiresInput`, ask only for Act or area level. Keep this confirmation near
+   progression boundaries.
+3. Run the smallest useful comparison. For idea requests or material rebuilds,
+   map build layers with `build-layers.md`, then search for concept-sized
+   replacements. Do not use global brute force as ideation.
+4. Keep the validated scenario fixed, verify legality and restoration, and
+   reject drift. Use `directed` for explicit passive deltas; it preserves
+   attribute choices and does not mutate the build.
+5. Keep the large-work confirmation: more than 40 variants or exhaustive work
+   requires explicit user approval. Never change a saved build without separate
+   approval.
+
+**Raw artifacts are machine-only. Never open a full artifact!** Query a bounded
+packet or one candidate through `passive report`. Full files may contain
+millions of tokens even though they cost no context while left on disk.
 
 ## Handoff
 
@@ -33,12 +40,11 @@ coupled work here.
 ## Load only when needed
 
 - broad non-passive ideas: [ideation.md](references/ideation.md);
-- build layers, dependencies, or material rebuilds:
-  [build-layers.md](references/build-layers.md);
+- build layers or material rebuilds: [build-layers.md](references/build-layers.md);
 - item replacement: [item-completion.md](references/item-completion.md);
-- custom variant spec: [experiment-spec.md](references/experiment-spec.md);
+- custom or directed variants: [experiment-spec.md](references/experiment-spec.md);
 - passive search/rebuild: [passive-optimizer.md](references/passive-optimizer.md);
-- scenario diagnosis/override: [poe2-scenarios.md](references/poe2-scenarios.md);
-- mechanic or calculator ambiguity: [guardrails.md](references/guardrails.md).
+- scenario diagnosis: [poe2-scenarios.md](references/poe2-scenarios.md);
+- mechanic ambiguity: [guardrails.md](references/guardrails.md).
 
 Do not search historical tasks, roadmaps, or old result dumps.

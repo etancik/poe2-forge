@@ -1,69 +1,32 @@
 # Experiment Specs
 
-Run:
+Use `poe2-forge.js experiment SPEC.json` for non-passive API variants. Include
+all five validated scenario fields; each variant reloads the baseline and
+verifies the scenario. Do not use `update_tree_delta` for exact passive work,
+because generic mutation can lose attribute-node choices.
 
-```text
-node scripts/run-experiment.js <spec.json> --output summary.json
-```
-
-Use the complete scenario emitted by `refresh-build.js`:
+Use `poe2-forge.js directed SPEC.json` for passive deltas:
 
 ```json
 {
-  "name": "focused-passive-check",
+  "name": "cross-layer-swap",
   "build": "C:\\path\\Build.xml",
-  "scope": "focused",
-  "metrics": ["Life", "TotalEHP", "TotalDPS"],
-  "xmlScenario": {
-    "placeholders": {
-      "enemyLevel": 42,
-      "enemyEvasion": 369,
-      "enemyArmour": 479
-    },
-    "inputs": {
-      "enemyLevel": 42,
-      "enemyEvasion": 369,
-      "enemyArmour": 479,
-      "enemyDistance": 20,
-      "resistancePenalty": -20
-    }
-  },
-  "scenarioActions": [
-    {
-      "action": "set_config",
-      "params": {
-        "enemyLevel": 42,
-        "enemyEvasion": 369,
-        "enemyArmour": 479,
-        "enemyDistance": 20,
-        "resistancePenalty": -20
-      }
-    }
+  "baseline": "artifacts/refresh.json",
+  "objectives": [
+    {"name": "ehp", "field": "TotalEHP", "direction": "max"},
+    {"name": "damage", "field": "TotalDPS", "direction": "max",
+     "skill": {"names": ["Shred"]}}
   ],
   "variants": [
-    {
-      "id": "add-node",
-      "actions": [
-        {"action": "update_tree_delta", "params": {"addNodes": [12345]}}
-      ],
-      "assertions": [
-        {"path": "tree.nodes", "op": "includes", "value": 12345}
-      ]
-    }
-  ],
-  "sort": {"metric": "TotalEHP", "direction": "desc"},
-  "summaryMetrics": ["TotalEHP", "Life", "TotalDPS"],
-  "stdoutTopN": 5,
-  "topN": 8
+    {"id": "swap", "addNodes": [15580], "removeNodes": [13693]}
+  ]
 }
 ```
 
-Every variant reloads the same build, applies the shared scenario, then its own
-actions. The runner requires all five scenario fields and verifies them for the
-baseline and every variant. Supported assertion operations are `equals`,
-`notEquals`, `includes`, `notIncludes`, `gte`, `lte`, and `exists`.
+The trusted refresh artifact supplies the scenario. Directed evaluation first
+validates the resulting tree, then measures an in-memory XML variant that preserves attribute choices and
+checks build, tree, and baseline restoration.
 
-Up to 12 variants run as `small`; 13-40 run as bounded `medium`. Only `large`
-work above 40 variants or explicit exhaustive work requires `approved: true`.
-Normal stdout contains at most six metrics and five top variants. Use
-`--full-stdout` only to debug reporting.
+Up to 12 variants are `small`; 13-40 are bounded `medium`. More than 40 or
+explicit exhaustive work requires `"approved": true`. Default stdout is a
+bounded packet; `silent` chains artifacts and `debug` is explicit.

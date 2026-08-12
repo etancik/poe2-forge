@@ -336,7 +336,7 @@ async function main() {
         ? result
         : {
             needs: result.needs,
-            opportunities: opportunities.slice(0, 8).map((item) => ({
+            opportunities: opportunities.slice(0, args.top).map((item) => ({
               slot: item.slot,
               item: item.name,
               existingEmptySockets: item.existingEmptySockets,
@@ -350,7 +350,7 @@ async function main() {
               replacementHorizon: item.replacementHorizon,
               transitionCompatibility: item.transitionCompatibility,
             })),
-            omittedOpportunities: Math.max(0, opportunities.length - 8),
+            omittedOpportunities: Math.max(0, opportunities.length - args.top),
             output: args.output ? path.basename(args.output) : null,
           };
       process.stdout.write(`${JSON.stringify(stdoutValue, null, 2)}\n`);
